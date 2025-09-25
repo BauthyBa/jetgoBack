@@ -37,3 +37,9 @@ supabase-functions==2.19.0; python_version >= '3.9'
 typing-extensions==4.15.0; python_version < '3.11'
 typing-inspection==0.4.1; python_version >= '3.9'
 websockets==15.0.1; python_version >= '3.9'
+
+# Deploy/runtime
+gunicorn==22.0.0
+whitenoise==6.7.0
+dj-database-url==2.2.0
+psycopg2-binary==2.9.9

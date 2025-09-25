@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: jetgo-back
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
+    startCommand: gunicorn api.wsgi:application --bind 0.0.0.0:$PORT --workers 3
+    envVars:
+      - key: DJANGO_DEBUG
+        value: false
+      - key: DJANGO_ALLOWED_HOSTS
+        value: jetgo-back.onrender.com
+      - key: CSRF_TRUSTED_ORIGIN
+        value: https://jetgo-back.onrender.com
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: FRONTEND_CONFIRM_URL
+        sync: false
+      - key: SUPABASE_SCHEMA
+        value: public
+      - key: SUPABASE_USERS_TABLE
+        value: User
