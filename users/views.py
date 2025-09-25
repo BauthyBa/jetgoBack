@@ -1,4 +1,5 @@
 from rest_framework import generics, permissions, status
+from rest_framework.authentication import BaseAuthentication
 from rest_framework.response import Response
 from .serializers import RegisterSerializer, LoginSerializer
 from api.supabase_client import get_supabase_admin
@@ -25,6 +26,7 @@ class LoginView(generics.GenericAPIView):
 class UpsertProfileView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
     http_method_names = ['post']
+    authentication_classes = []
 
     def post(self, request, *args, **kwargs):
         try:
