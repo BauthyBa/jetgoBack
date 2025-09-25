@@ -29,12 +29,24 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'dev-secret-key-change-me')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = os.getenv('DJANGO_ALLOWED_HOSTS', '').split(',') if os.getenv('DJANGO_ALLOWED_HOSTS') else []
+_hosts_env = os.getenv('DJANGO_ALLOWED_HOSTS')
+if _hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _hosts_env.split(',') if h.strip()]
+else:
+    # Permit Render health checks and local dev by default
+    ALLOWED_HOSTS = ['.onrender.com', 'localhost', '127.0.0.1']
+
 CORS_ALLOW_ALL_ORIGINS = True
-CSRF_TRUSTED_ORIGINS = [
-    *[f"https://{h.strip()}" for h in ALLOWED_HOSTS if h.strip()],
+
+_csrf_from_hosts = [f"https://{h.lstrip('.')}" for h in ALLOWED_HOSTS if h not in ('localhost', '127.0.0.1')]
+CSRF_TRUSTED_ORIGINS = list({
+    *[o for o in _csrf_from_hosts if o],
+    'https://*.onrender.com',
     os.getenv('CSRF_TRUSTED_ORIGIN', ''),
-]
+} - {''})
+
+# Behind proxy (Render)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
