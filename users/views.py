@@ -116,19 +116,25 @@ class TripCreateView(APIView):
     authentication_classes = []
 
     def post(self, request, *args, **kwargs):
-        """Create trip in Supabase and a chat room + membership for creator."""
-        try:
-            admin = get_supabase_admin()
-            payload = request.data or {}
-            creator_id = str(payload.get('creator_id') or '')
-            origin = payload.get('origin')
-            destination = payload.get('destination')
-            date_iso = payload.get('date')
-            name = payload.get('name') or f"Viaje {origin or ''}-{destination or ''}"
-            if not creator_id:
-                return Response({'ok': False, 'error': 'creator_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        """Create trip, then create a linked chat room and add creator as member.
+        Returns ok:true if at least the trip is created; includes partial error details when chat/membership fail.
+        """
+        admin = get_supabase_admin()
+        payload = request.data or {}
+        creator_id = str(payload.get('creator_id') or '')
+        origin = payload.get('origin')
+        destination = payload.get('destination')
+        date_iso = payload.get('date')
+        name = payload.get('name') or f"Viaje {origin or ''}-{destination or ''}"
+        if not creator_id:
+            return Response({'ok': False, 'error': 'creator_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # 1) Create trip (table public.trips)
+        new_trip = None
+        new_room = None
+        errors: dict[str, str] = {}
+
+        # 1) Create trip (table public.trips)
+        try:
             trip_row = {
                 'creator_id': creator_id,
                 'origin': origin,
@@ -138,24 +144,34 @@ class TripCreateView(APIView):
             }
             trip = admin.table('trips').insert(trip_row).execute()
             new_trip = (getattr(trip, 'data', None) or [None])[0]
+        except Exception as e:
+            return Response({'ok': False, 'error': f'No se pudo crear viaje: {e}'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # 2) Create chat room
+        # 2) Create chat room (tolerant to missing trip_id column)
+        try:
             room_payload = { 'name': f"Chat {name}", 'creator_id': creator_id }
             if new_trip and new_trip.get('id'):
-                room_payload['trip_id'] = new_trip['id']
-            room = admin.table('chat_rooms').insert(room_payload).execute()
-            new_room = (getattr(room, 'data', None) or [None])[0]
-
-            # 3) Membership owner
-            if new_room:
                 try:
-                    admin.table('chat_members').insert({ 'room_id': new_room['id'], 'user_id': creator_id, 'role': 'owner' }).execute()
+                    resp = admin.table('chat_rooms').insert({ **room_payload, 'trip_id': new_trip['id'] }).execute()
+                    new_room = (getattr(resp, 'data', None) or [None])[0]
                 except Exception:
-                    pass
-
-            return Response({'ok': True, 'trip': new_trip, 'room': new_room})
+                    resp = admin.table('chat_rooms').insert(room_payload).execute()
+                    new_room = (getattr(resp, 'data', None) or [None])[0]
+            else:
+                resp = admin.table('chat_rooms').insert(room_payload).execute()
+                new_room = (getattr(resp, 'data', None) or [None])[0]
         except Exception as e:
-            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            errors['room'] = f'No se pudo crear sala: {e}'
+
+        # 3) Membership owner (best effort)
+        if new_room:
+            try:
+                admin.table('chat_members').insert({ 'room_id': new_room['id'], 'user_id': creator_id, 'role': 'owner' }).execute()
+            except Exception as e:
+                errors['membership'] = f'No se pudo agregar al creador a la sala: {e}'
+
+        status_code = status.HTTP_200_OK if new_trip else status.HTTP_400_BAD_REQUEST
+        return Response({'ok': bool(new_trip), 'trip': new_trip, 'room': new_room, 'errors': errors or None}, status=status_code)
 
 
 class ListTripsView(APIView):
@@ -197,23 +213,28 @@ class JoinTripView(APIView):
             except Exception:
                 room = None
 
-            # Si no existe sala, crearla (con trip_id si la columna existe)
+            # Si no existe, intentar localizar por nombre/creador y asignar trip_id (no crear una nueva)
             if not room:
-                payload = { 'name': f"Chat {trip.get('name') or ''}", 'creator_id': str(trip.get('creator_id') or user_id) }
-                created = None
-                # Intentar con trip_id
                 try:
-                    payload_with_trip = { **payload, 'trip_id': trip_id }
-                    created_resp = admin.table('chat_rooms').insert(payload_with_trip).execute()
-                    created = (getattr(created_resp, 'data', None) or [None])[0]
+                    guess = (
+                        admin.table('chat_rooms')
+                        .select('*')
+                        .eq('creator_id', str(trip.get('creator_id') or ''))
+                        .eq('name', f"Chat {trip.get('name') or ''}")
+                        .limit(1)
+                        .execute()
+                    )
+                    guessed = (getattr(guess, 'data', None) or [None])[0]
                 except Exception:
-                    # Fallback sin trip_id (por si la columna no existe aún)
+                    guessed = None
+                if guessed:
                     try:
-                        created_resp = admin.table('chat_rooms').insert(payload).execute()
-                        created = (getattr(created_resp, 'data', None) or [None])[0]
-                    except Exception as e2:
-                        return Response({'ok': False, 'error': f'No se pudo crear sala: {e2}'}, status=status.HTTP_400_BAD_REQUEST)
-                room = created
+                        admin.table('chat_rooms').update({'trip_id': trip_id}).eq('id', guessed['id']).execute()
+                        room = guessed | {'trip_id': trip_id}
+                    except Exception:
+                        room = guessed
+                else:
+                    return Response({'ok': False, 'error': 'No hay sala para este viaje'}, status=status.HTTP_404_NOT_FOUND)
 
             # Crear membresía
             try:
