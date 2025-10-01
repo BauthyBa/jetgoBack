@@ -107,9 +107,19 @@ WSGI_APPLICATION = 'api.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASE_URL = os.getenv('DATABASE_URL')
+
+# Allow toggling DB SSL for local vs server via env.
+# If DEBUG is false (production), default to requiring SSL; otherwise default to no SSL.
+_db_ssl_default = 'True' if not (os.getenv('DJANGO_DEBUG', 'True').lower() == 'true') else 'False'
+DB_SSL_REQUIRED = os.getenv('DB_SSL_REQUIRED', _db_ssl_default).lower() == 'true'
+
 if DATABASE_URL:
     DATABASES = {
-        'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=600, ssl_require=True)
+        'default': dj_database_url.config(
+            default=DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=DB_SSL_REQUIRED,
+        )
     }
 else:
     DATABASES = {
