@@ -267,7 +267,23 @@ class ListTripMembersView(APIView):
             trip_id = request.query_params.get('trip_id')
             if not trip_id:
                 return Response({'ok': False, 'error': 'trip_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
-            members = admin.table('trip_members').select('user_id').eq('trip_id', trip_id).execute()
-            return Response({'ok': True, 'members': getattr(members, 'data', [])})
+            members_resp = admin.table('trip_members').select('user_id').eq('trip_id', trip_id).execute()
+            members = getattr(members_resp, 'data', []) or []
+            ids = list({str(m.get('user_id')) for m in members if m and m.get('user_id')})
+            name_map = {}
+            if ids:
+                try:
+                    schema = environ.get('SUPABASE_SCHEMA', 'public')
+                    table = environ.get('SUPABASE_USERS_TABLE', 'User')
+                    prof = admin.schema(schema).table(table).select('userid,nombre,apellido').in_('userid', ids).execute()
+                    for row in (getattr(prof, 'data', []) or []):
+                        uid = str(row.get('userid'))
+                        full = ' '.join([x for x in [row.get('nombre'), row.get('apellido')] if x]).strip()
+                        if uid and full:
+                            name_map[uid] = full
+                except Exception:
+                    name_map = {}
+            enriched = [{ 'user_id': str(m.get('user_id')), 'name': name_map.get(str(m.get('user_id')))} for m in members]
+            return Response({'ok': True, 'members': enriched})
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
