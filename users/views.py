@@ -169,6 +169,12 @@ class TripCreateView(APIView):
                 admin.table('chat_members').insert({ 'room_id': new_room['id'], 'user_id': creator_id, 'role': 'owner' }).execute()
             except Exception as e:
                 errors['membership'] = f'No se pudo agregar al creador a la sala: {e}'
+        # 3b) Trip membership owner (best effort)
+        if new_trip and new_trip.get('id'):
+            try:
+                admin.table('trip_members').insert({ 'trip_id': new_trip['id'], 'user_id': creator_id, 'role': 'owner' }).execute()
+            except Exception:
+                pass
 
         status_code = status.HTTP_200_OK if new_trip else status.HTTP_400_BAD_REQUEST
         return Response({'ok': bool(new_trip), 'trip': new_trip, 'room': new_room, 'errors': errors or None}, status=status_code)
@@ -241,6 +247,27 @@ class JoinTripView(APIView):
                 admin.table('chat_members').insert({ 'room_id': room['id'], 'user_id': user_id, 'role': 'member' }).execute()
             except Exception:
                 pass
+            # Crear membresía en trip_members también
+            try:
+                admin.table('trip_members').insert({ 'trip_id': trip_id, 'user_id': user_id, 'role': 'member' }).execute()
+            except Exception:
+                pass
             return Response({'ok': True, 'room_id': room['id']})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ListTripMembersView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            trip_id = request.query_params.get('trip_id')
+            if not trip_id:
+                return Response({'ok': False, 'error': 'trip_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            members = admin.table('trip_members').select('user_id').eq('trip_id', trip_id).execute()
+            return Response({'ok': True, 'members': getattr(members, 'data', [])})
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

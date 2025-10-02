@@ -7,6 +7,7 @@ from .views import (
     TripCreateView,
     ListTripsView,
     JoinTripView,
+    ListTripMembersView,
 )
 
 
@@ -18,5 +19,6 @@ urlpatterns = [
     path('trips/create/', TripCreateView.as_view(), name='trip_create'),
     path('trips/list/', ListTripsView.as_view(), name='trip_list'),
     path('trips/join/', JoinTripView.as_view(), name='trip_join'),
+    path('trips/members/', ListTripMembersView.as_view(), name='trip_members'),
 ]
 
