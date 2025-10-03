@@ -257,6 +257,81 @@ class JoinTripView(APIView):
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class LeaveTripView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        """Permite abandonar un viaje. Si el usuario es el creador, elimina el viaje y su chat grupal.
+        Para miembros, elimina su membresía del viaje y del chat.
+        """
+        try:
+            admin = get_supabase_admin()
+            trip_id = request.data.get('trip_id')
+            user_id = str(request.data.get('user_id') or '')
+            if not trip_id or not user_id:
+                return Response({'ok': False, 'error': 'trip_id y user_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Obtener viaje
+            trip_resp = admin.table('trips').select('id,name,creator_id').eq('id', trip_id).limit(1).execute()
+            trip = (getattr(trip_resp, 'data', None) or [None])[0]
+            if not trip:
+                return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+            is_owner = str(trip.get('creator_id') or '') == user_id
+
+            # Localizar sala grupal por trip_id (si existe)
+            room = None
+            try:
+                rooms = admin.table('chat_rooms').select('id,trip_id').eq('trip_id', trip_id).limit(1).execute()
+                room = (getattr(rooms, 'data', None) or [None])[0]
+            except Exception:
+                room = None
+
+            if is_owner:
+                # El organizador elimina el viaje y limpia el chat para todos
+                try:
+                    if room and room.get('id'):
+                        rid = room['id']
+                        try:
+                            admin.table('chat_messages').delete().eq('room_id', rid).execute()
+                        except Exception:
+                            pass
+                        try:
+                            admin.table('chat_members').delete().eq('room_id', rid).execute()
+                        except Exception:
+                            pass
+                        try:
+                            admin.table('chat_rooms').delete().eq('id', rid).execute()
+                        except Exception:
+                            pass
+                except Exception:
+                    # Continuar aunque falle limpieza parcial
+                    pass
+                try:
+                    admin.table('trip_members').delete().eq('trip_id', trip_id).execute()
+                except Exception:
+                    pass
+                try:
+                    admin.table('trips').delete().eq('id', trip_id).execute()
+                except Exception as e:
+                    return Response({'ok': False, 'error': f'No se pudo eliminar el viaje: {e}'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'ok': True, 'deleted': True})
+
+            # Miembro: salir del viaje y del chat
+            try:
+                if room and room.get('id'):
+                    admin.table('chat_members').delete().eq('room_id', room['id']).eq('user_id', user_id).execute()
+            except Exception:
+                pass
+            try:
+                admin.table('trip_members').delete().eq('trip_id', trip_id).eq('user_id', user_id).execute()
+            except Exception:
+                pass
+            return Response({'ok': True, 'deleted': False})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 class ListTripMembersView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
