@@ -45,6 +45,10 @@ class UpsertProfileView(generics.GenericAPIView):
                 'sexo': request.data.get('sex'),
                 'fecha_nacimiento': request.data.get('birth_date'),
                 'mail': request.data.get('email'),
+                # Campos de personalización de perfil (opción A)
+                'bio': request.data.get('bio'),
+                'interests': request.data.get('interests'),
+                'favorite_travel_styles': request.data.get('favorite_travel_styles'),
             }
             # Use upsert to insert or update by userid
             try:
