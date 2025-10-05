@@ -139,6 +139,8 @@ class TripCreateView(APIView):
 
         # 1) Create trip (table public.trips)
         try:
+            # Allow optional image_url passthrough if provided by frontend
+            image_url = payload.get('image_url')
             trip_row = {
                 'creator_id': creator_id,
                 'origin': origin,
@@ -146,6 +148,11 @@ class TripCreateView(APIView):
                 'date': date_iso,
                 'name': name,
             }
+            if image_url:
+                try:
+                    trip_row['image_url'] = image_url
+                except Exception:
+                    pass
             trip = admin.table('trips').insert(trip_row).execute()
             new_trip = (getattr(trip, 'data', None) or [None])[0]
         except Exception as e:

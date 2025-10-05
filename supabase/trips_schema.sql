@@ -31,6 +31,7 @@ create table public.trips (
   creator_id text not null, -- Supabase auth.uid() stored as text
   origin text,
   destination text,
+  image_url text,
   start_date timestamptz,
   end_date timestamptz,
   budget_min numeric,
