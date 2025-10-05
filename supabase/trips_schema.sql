@@ -57,6 +57,15 @@ create table public.trip_members (
 -- Indexes
 create index if not exists idx_trips_creator on public.trips(creator_id);
 create index if not exists idx_trips_dates on public.trips(start_date, end_date);
+-- Unique trip name (case-insensitive)
+do $$
+begin
+  if not exists (
+    select 1 from pg_indexes where schemaname = 'public' and indexname = 'ux_trips_name_ci'
+  ) then
+    execute 'create unique index ux_trips_name_ci on public.trips (lower(name))';
+  end if;
+exception when others then null; end$$;
 create index if not exists idx_trip_members_trip on public.trip_members(trip_id);
 create index if not exists idx_trip_members_user on public.trip_members(user_id);
 

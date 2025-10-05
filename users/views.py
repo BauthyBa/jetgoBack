@@ -153,6 +153,16 @@ class TripCreateView(APIView):
                     trip_row['image_url'] = image_url
                 except Exception:
                     pass
+            # Validate duplicate name (case-insensitive)
+            try:
+                existing = admin.table('trips').select('id').ilike('name', name).limit(1).execute()
+                exists_any = bool((getattr(existing, 'data', None) or []))
+                if exists_any:
+                    return Response({'ok': False, 'error': 'Ya existe un viaje con ese nombre'}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                # Best-effort; rely on DB unique index as final guard
+                pass
+
             trip = admin.table('trips').insert(trip_row).execute()
             new_trip = (getattr(trip, 'data', None) or [None])[0]
         except Exception as e:
