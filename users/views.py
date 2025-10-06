@@ -250,8 +250,22 @@ class ListTripsView(APIView):
     def get(self, request, *args, **kwargs):
         try:
             admin = get_supabase_admin()
-            trips = admin.table('trips').select('*').order('created_at', desc=True).execute()
-            return Response({'ok': True, 'trips': getattr(trips, 'data', [])})
+            trips_resp = admin.table('trips').select('*').order('created_at', desc=True).execute()
+            trips = getattr(trips_resp, 'data', []) or []
+
+            # Attach current_participants count for each trip (best-effort)
+            enriched = []
+            for t in trips:
+                try:
+                    c_resp = admin.table('trip_members').select('id', count='exact').eq('trip_id', t.get('id')).execute()
+                    current = getattr(c_resp, 'count', None)
+                    if isinstance(current, int):
+                        t = { **t, 'current_participants': current }
+                except Exception:
+                    pass
+                enriched.append(t)
+
+            return Response({'ok': True, 'trips': enriched})
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
