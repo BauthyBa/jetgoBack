@@ -245,6 +245,88 @@ class TripCreateView(APIView):
         return Response({'ok': bool(new_trip), 'trip': new_trip, 'room': new_room, 'errors': errors or None}, status=status_code)
 
 
+class TripUpdateView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        """Update an existing trip. Only the creator can update.
+        Accepts partial fields. Frontend sends: id, name, origin, destination,
+        start_date, end_date, budget_min, budget_max, status, room_type,
+        season, country, max_participants, image_url, creator_id.
+        """
+        try:
+            admin = get_supabase_admin()
+            payload = request.data or {}
+            trip_id = payload.get('id')
+            creator_id = str(payload.get('creator_id') or '')
+            if not trip_id:
+                return Response({'ok': False, 'error': 'id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            if not creator_id:
+                return Response({'ok': False, 'error': 'creator_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Fetch existing trip
+            trip_resp = admin.table('trips').select('*').eq('id', trip_id).limit(1).execute()
+            current = (getattr(trip_resp, 'data', None) or [None])[0]
+            if not current:
+                return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+            if str(current.get('creator_id') or '') != creator_id:
+                return Response({'ok': False, 'error': 'Solo el creador puede actualizar este viaje'}, status=status.HTTP_403_FORBIDDEN)
+
+            # Build update payload (only provided fields)
+            update_row = {}
+            def set_if_present(key_db, key_payload, coerce=None):
+                val = payload.get(key_payload)
+                if val is None:
+                    return
+                if isinstance(val, str) and val.strip() == '':
+                    update_row[key_db] = None
+                    return
+                try:
+                    update_row[key_db] = coerce(val) if coerce else val
+                except Exception:
+                    update_row[key_db] = val
+
+            set_if_present('name', 'name')
+            set_if_present('origin', 'origin')
+            set_if_present('destination', 'destination')
+            # Store start_date in 'date' column for compatibility
+            sd = payload.get('start_date')
+            if sd is not None:
+                update_row['date'] = sd if not (isinstance(sd, str) and sd.strip() == '') else None
+            set_if_present('end_date', 'end_date')
+            set_if_present('country', 'country')
+            set_if_present('budget_min', 'budget_min', float)
+            set_if_present('budget_max', 'budget_max', float)
+            set_if_present('status', 'status')
+            set_if_present('room_type', 'room_type')
+            set_if_present('season', 'season')
+            set_if_present('max_participants', 'max_participants', int)
+            set_if_present('image_url', 'image_url')
+
+            if not update_row:
+                return Response({'ok': True, 'trip': current, 'message': 'Sin cambios'})
+
+            # Apply update
+            admin.table('trips').update(update_row).eq('id', trip_id).execute()
+            # Fetch updated row
+            updated_resp = admin.table('trips').select('*').eq('id', trip_id).limit(1).execute()
+            updated = (getattr(updated_resp, 'data', None) or [None])[0]
+
+            # Try to keep chat room name in sync if trip name changed
+            try:
+                if 'name' in update_row:
+                    rooms = admin.table('chat_rooms').select('id').eq('trip_id', trip_id).limit(1).execute()
+                    room = (getattr(rooms, 'data', None) or [None])[0]
+                    if room and room.get('id'):
+                        admin.table('chat_rooms').update({'name': f"Chat {update_row['name'] or ''}"}).eq('id', room['id']).execute()
+            except Exception:
+                pass
+
+            return Response({'ok': True, 'trip': updated or current})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 class ListTripsView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
