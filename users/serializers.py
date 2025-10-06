@@ -241,12 +241,46 @@ class ReviewSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'reviewer_name', 'reviewed_user_name']
     
     def get_reviewer_name(self, obj):
-        """Obtiene el nombre completo del usuario que hace la reseña"""
-        return f"{obj.reviewer.first_name} {obj.reviewer.last_name}".strip()
+        """Obtiene el nombre completo del usuario que hace la reseña desde Supabase"""
+        try:
+            from api.supabase_client import get_supabase_admin
+            from os import environ
+            
+            admin = get_supabase_admin()
+            schema = environ.get('SUPABASE_SCHEMA', 'public')
+            table = environ.get('SUPABASE_USERS_TABLE', 'User')
+            
+            user_resp = admin.schema(schema).table(table).select('nombre,apellido').eq('userid', str(obj.reviewer.id)).limit(1).execute()
+            user_data = (getattr(user_resp, 'data', None) or [None])[0]
+            
+            if user_data:
+                nombre = user_data.get('nombre', '')
+                apellido = user_data.get('apellido', '')
+                return f"{nombre} {apellido}".strip() or 'Usuario anónimo'
+            return 'Usuario anónimo'
+        except Exception:
+            return 'Usuario anónimo'
     
     def get_reviewed_user_name(self, obj):
-        """Obtiene el nombre completo del usuario reseñado"""
-        return f"{obj.reviewed_user.first_name} {obj.reviewed_user.last_name}".strip()
+        """Obtiene el nombre completo del usuario reseñado desde Supabase"""
+        try:
+            from api.supabase_client import get_supabase_admin
+            from os import environ
+            
+            admin = get_supabase_admin()
+            schema = environ.get('SUPABASE_SCHEMA', 'public')
+            table = environ.get('SUPABASE_USERS_TABLE', 'User')
+            
+            user_resp = admin.schema(schema).table(table).select('nombre,apellido').eq('userid', str(obj.reviewed_user.id)).limit(1).execute()
+            user_data = (getattr(user_resp, 'data', None) or [None])[0]
+            
+            if user_data:
+                nombre = user_data.get('nombre', '')
+                apellido = user_data.get('apellido', '')
+                return f"{nombre} {apellido}".strip() or 'Usuario anónimo'
+            return 'Usuario anónimo'
+        except Exception:
+            return 'Usuario anónimo'
     
     def validate(self, attrs):
         """Validaciones personalizadas"""

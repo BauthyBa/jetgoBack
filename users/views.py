@@ -471,15 +471,31 @@ class CreateReviewView(APIView):
                     'error': 'reviewer_id, reviewed_user_id y rating son requeridos'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Verificar que los usuarios existan
+            # Verificar que los usuarios existan en Supabase
+            admin = get_supabase_admin()
+            schema = environ.get('SUPABASE_SCHEMA', 'public')
+            table = environ.get('SUPABASE_USERS_TABLE', 'User')
+            
             try:
-                reviewer = User.objects.get(id=reviewer_id)
-                reviewed_user = User.objects.get(id=reviewed_user_id)
-            except User.DoesNotExist:
+                # Verificar reviewer
+                reviewer_resp = admin.schema(schema).table(table).select('userid').eq('userid', str(reviewer_id)).limit(1).execute()
+                reviewer_data = (getattr(reviewer_resp, 'data', None) or [None])[0]
+                
+                # Verificar reviewed_user
+                reviewed_resp = admin.schema(schema).table(table).select('userid').eq('userid', str(reviewed_user_id)).limit(1).execute()
+                reviewed_data = (getattr(reviewed_resp, 'data', None) or [None])[0]
+                
+                if not reviewer_data or not reviewed_data:
+                    return Response({
+                        'ok': False, 
+                        'error': 'Usuario no encontrado'
+                    }, status=status.HTTP_404_NOT_FOUND)
+                    
+            except Exception as e:
                 return Response({
                     'ok': False, 
-                    'error': 'Usuario no encontrado'
-                }, status=status.HTTP_404_NOT_FOUND)
+                    'error': f'Error verificando usuarios: {str(e)}'
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             # Verificar que no se esté autoreseñando
             if reviewer_id == reviewed_user_id:
@@ -487,6 +503,33 @@ class CreateReviewView(APIView):
                     'ok': False, 
                     'error': 'No puedes dejarte una reseña a ti mismo'
                 }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Crear o obtener usuarios Django basados en IDs de Supabase
+            reviewer, _ = User.objects.get_or_create(
+                id=reviewer_id,
+                defaults={
+                    'email': f'{reviewer_id}@temp.com',
+                    'first_name': 'Usuario',
+                    'last_name': 'Temporal',
+                    'document_number': reviewer_id[:8],
+                    'sex': 'M',
+                    'birth_date': '1990-01-01',
+                    'age': 30
+                }
+            )
+            
+            reviewed_user, _ = User.objects.get_or_create(
+                id=reviewed_user_id,
+                defaults={
+                    'email': f'{reviewed_user_id}@temp.com',
+                    'first_name': 'Usuario',
+                    'last_name': 'Temporal',
+                    'document_number': reviewed_user_id[:8],
+                    'sex': 'M',
+                    'birth_date': '1990-01-01',
+                    'age': 30
+                }
+            )
 
             # Verificar que no exista ya una reseña
             existing_review = Review.objects.filter(
@@ -542,14 +585,39 @@ class GetUserReviewsView(APIView):
                     'error': 'user_id es requerido'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Verificar que el usuario exista
+            # Verificar que el usuario exista en Supabase
+            admin = get_supabase_admin()
+            schema = environ.get('SUPABASE_SCHEMA', 'public')
+            table = environ.get('SUPABASE_USERS_TABLE', 'User')
+            
             try:
-                user = User.objects.get(id=user_id)
-            except User.DoesNotExist:
+                user_resp = admin.schema(schema).table(table).select('userid').eq('userid', str(user_id)).limit(1).execute()
+                user_data = (getattr(user_resp, 'data', None) or [None])[0]
+                
+                if not user_data:
+                    return Response({
+                        'ok': False, 
+                        'error': 'Usuario no encontrado'
+                    }, status=status.HTTP_404_NOT_FOUND)
+            except Exception as e:
                 return Response({
                     'ok': False, 
-                    'error': 'Usuario no encontrado'
-                }, status=status.HTTP_404_NOT_FOUND)
+                    'error': f'Error verificando usuario: {str(e)}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Crear o obtener usuario Django si no existe
+            user, _ = User.objects.get_or_create(
+                id=user_id,
+                defaults={
+                    'email': f'{user_id}@temp.com',
+                    'first_name': 'Usuario',
+                    'last_name': 'Temporal',
+                    'document_number': user_id[:8],
+                    'sex': 'M',
+                    'birth_date': '1990-01-01',
+                    'age': 30
+                }
+            )
 
             # Obtener todas las reseñas del usuario
             reviews = Review.objects.filter(reviewed_user=user).select_related('reviewer')
@@ -613,7 +681,20 @@ class GetUserProfileView(APIView):
 
             # Obtener reseñas del usuario desde Django
             try:
-                django_user = User.objects.get(id=user_id)
+                # Crear o obtener usuario Django si no existe
+                django_user, _ = User.objects.get_or_create(
+                    id=user_id,
+                    defaults={
+                        'email': f'{user_id}@temp.com',
+                        'first_name': 'Usuario',
+                        'last_name': 'Temporal',
+                        'document_number': user_id[:8],
+                        'sex': 'M',
+                        'birth_date': '1990-01-01',
+                        'age': 30
+                    }
+                )
+                
                 reviews = Review.objects.filter(reviewed_user=django_user).select_related('reviewer')
                 reviews_serializer = ReviewSerializer(reviews, many=True)
 

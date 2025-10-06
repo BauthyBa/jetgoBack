@@ -29,6 +29,7 @@ class UserManager(BaseUserManager):
 
 
 class User(AbstractBaseUser, PermissionsMixin):
+    id = models.CharField(max_length=36, primary_key=True)  # Para UUIDs de Supabase
     first_name = models.CharField(max_length=150)
     last_name = models.CharField(max_length=150)
     document_number = models.CharField(max_length=32, unique=True)
