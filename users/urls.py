@@ -13,6 +13,8 @@ from .views import (
     CreateReviewView,
     GetUserReviewsView,
     GetUserProfileView,
+    ApplicationCreateSupabaseView,
+    ApplicationRespondSupabaseView,
 )
 from .supabase_views import (
     SupabaseCreateReviewView,
@@ -34,6 +36,9 @@ urlpatterns = [
     path('trips/join/', JoinTripView.as_view(), name='trip_join'),
     path('trips/members/', ListTripMembersView.as_view(), name='trip_members'),
     path('trips/leave/', LeaveTripView.as_view(), name='trip_leave'),
+    # Applications (Supabase-backed)
+    path('applications/', ApplicationCreateSupabaseView.as_view(), name='applications_create'),
+    path('applications/respond/', ApplicationRespondSupabaseView.as_view(), name='applications_respond'),
     # URLs para reseñas (Django - deprecated)
     path('reviews/create/', CreateReviewView.as_view(), name='create_review'),
     path('reviews/user/', GetUserReviewsView.as_view(), name='get_user_reviews'),

@@ -820,3 +820,233 @@ class GetUserProfileView(APIView):
                 'ok': False, 
                 'error': str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
+
+
+# --- Applications flow using Supabase public.applications table ---
+
+class ApplicationCreateSupabaseView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        """Create an application row and a private chat between organizer and applicant.
+        Expects: trip_id (uuid), applicant_id (uuid), message (optional)
+        """
+        try:
+            admin = get_supabase_admin()
+            trip_id = request.data.get('trip_id')
+            applicant_id = request.data.get('applicant_id') or request.data.get('user_id')
+            message = (request.data.get('message') or '').strip()
+            if not trip_id or not applicant_id:
+                return Response({'ok': False, 'error': 'trip_id y applicant_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Read trip to get organizer and name
+            trip_resp = admin.table('trips').select('id,name,creator_id').eq('id', trip_id).limit(1).execute()
+            trip = (getattr(trip_resp, 'data', None) or [None])[0]
+            if not trip:
+                return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+            # Insert application with status pending
+            app_payload = {
+                'trip_id': trip_id,
+                'applicant_id': str(applicant_id),
+                'status': 'pending',
+            }
+            if message:
+                app_payload['message'] = message
+            app_resp = admin.table('applications').insert(app_payload).execute()
+            application = (getattr(app_resp, 'data', None) or [None])[0]
+            if not application:
+                return Response({'ok': False, 'error': 'No se pudo crear la aplicación'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Find or create a private room between organizer and applicant for this trip
+            room = None
+            try:
+                # Candidate room ids where both users are members
+                creator_rooms = admin.table('chat_members').select('room_id').eq('user_id', str(trip.get('creator_id') or '')).execute()
+                applicant_rooms = admin.table('chat_members').select('room_id').eq('user_id', str(applicant_id)).execute()
+                creator_ids = {row['room_id'] for row in (getattr(creator_rooms, 'data', []) or []) if row and row.get('room_id')}
+                applicant_ids = {row['room_id'] for row in (getattr(applicant_rooms, 'data', []) or []) if row and row.get('room_id')}
+                common = list(creator_ids.intersection(applicant_ids))
+                if common:
+                    try:
+                        # filter by trip and private-ish
+                        r = (
+                            admin.table('chat_rooms')
+                            .select('*')
+                            .in_('id', common)
+                            .eq('trip_id', trip_id)
+                            .limit(1)
+                            .execute()
+                        )
+                        room = (getattr(r, 'data', None) or [None])[0]
+                    except Exception:
+                        room = None
+            except Exception:
+                room = None
+            if not room:
+                room_payload = {
+                    'name': f"Privado: {trip.get('name')}",
+                    'creator_id': str(trip.get('creator_id') or ''),
+                    'trip_id': trip_id,
+                    'application_id': application['id'],
+                    'is_group': False,
+                    'is_private': True,
+                }
+                try:
+                    room_resp = admin.table('chat_rooms').insert(room_payload).execute()
+                except Exception:
+                    # Fallback minimal set of columns
+                    minimal = {k: room_payload[k] for k in ['name', 'creator_id', 'trip_id', 'application_id']}
+                    room_resp = admin.table('chat_rooms').insert(minimal).execute()
+                room = (getattr(room_resp, 'data', None) or [None])[0]
+
+            # Add organizer and applicant as members (best-effort)
+            try:
+                if room:
+                    members = [
+                        { 'room_id': room['id'], 'user_id': str(trip.get('creator_id') or ''), 'role': 'owner' },
+                        { 'room_id': room['id'], 'user_id': str(applicant_id), 'role': 'member' },
+                    ]
+                    try:
+                        admin.table('chat_members').insert(members).execute()
+                    except Exception:
+                        for m in members:
+                            try:
+                                admin.table('chat_members').insert(m).execute()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            # Initial message from applicant (tagged so frontend can render actions inside the bubble)
+            try:
+                if room and message:
+                    tagged = f"APP|{application['id']}|{message}"
+                    admin.table('chat_messages').insert({
+                        'room_id': room['id'],
+                        'user_id': str(applicant_id),
+                        'content': tagged,
+                    }).execute()
+            except Exception:
+                pass
+
+            return Response({'ok': True, 'application': application, 'room_id': room.get('id') if room else None})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ApplicationRespondSupabaseView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        """Accept or reject an application.
+        Expects: application_id (int), action ('accept'|'reject'), organizer_id (uuid)
+        On accept: add applicant to trip_members and chat_members of the existing group chat room for the trip.
+        """
+        try:
+            admin = get_supabase_admin()
+            app_id = request.data.get('application_id') or request.data.get('id')
+            action = (request.data.get('action') or '').strip().lower()
+            organizer_id = str(request.data.get('organizer_id') or '')
+            if not app_id or action not in ('accept', 'reject'):
+                return Response({'ok': False, 'error': 'application_id y action requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Load application and trip
+            app_resp = admin.table('applications').select('*').eq('id', app_id).limit(1).execute()
+            application = (getattr(app_resp, 'data', None) or [None])[0]
+            if not application:
+                return Response({'ok': False, 'error': 'Aplicación no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+            trip_id = application.get('trip_id')
+            applicant_id = application.get('applicant_id')
+            if not trip_id or not applicant_id:
+                return Response({'ok': False, 'error': 'Aplicación inválida'}, status=status.HTTP_400_BAD_REQUEST)
+            trip_resp = admin.table('trips').select('id,name,creator_id').eq('id', trip_id).limit(1).execute()
+            trip = (getattr(trip_resp, 'data', None) or [None])[0]
+            if not trip:
+                return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+            # Verify organizer
+            expected_org = str(trip.get('creator_id') or '')
+            if organizer_id and organizer_id != expected_org:
+                return Response({'ok': False, 'error': 'organizer_id inválido para esta aplicación'}, status=status.HTTP_403_FORBIDDEN)
+
+            # Update application status
+            new_status = 'accepted' if action == 'accept' else 'rejected'
+            admin.table('applications').update({'status': new_status}).eq('id', app_id).execute()
+
+            # Close private chat with a system message (best-effort)
+            try:
+                # Prefer room tied to this application id
+                rcand = admin.table('chat_rooms').select('id,trip_id').eq('application_id', app_id).limit(1).execute()
+                room = (getattr(rcand, 'data', None) or [None])[0]
+                if not room:
+                    # Fallback: find any private room for this trip including both participants
+                    creator_id = expected_org
+                    creator_rooms = admin.table('chat_members').select('room_id').eq('user_id', creator_id).execute()
+                    applicant_rooms = admin.table('chat_members').select('room_id').eq('user_id', str(applicant_id)).execute()
+                    creator_ids = {row['room_id'] for row in (getattr(creator_rooms, 'data', []) or []) if row and row.get('room_id')}
+                    applicant_ids = {row['room_id'] for row in (getattr(applicant_rooms, 'data', []) or []) if row and row.get('room_id')}
+                    common = list(creator_ids.intersection(applicant_ids))
+                    if common:
+                        r2 = (
+                            admin.table('chat_rooms')
+                            .select('id')
+                            .in_('id', common)
+                            .eq('trip_id', trip_id)
+                            .limit(1)
+                            .execute()
+                        )
+                        room = (getattr(r2, 'data', None) or [None])[0]
+                if room:
+                    # Send status marker message to drive frontend UI state (APP_STATUS)
+                    marker = f"APP_STATUS|{app_id}|{'accepted' if action == 'accept' else 'rejected'}"
+                    try:
+                        admin.table('chat_messages').insert({
+                            'room_id': room['id'],
+                            'user_id': expected_org,
+                            'content': marker,
+                        }).execute()
+                    except Exception:
+                        # Fallback to plain text if needed
+                        admin.table('chat_messages').insert({
+                            'room_id': room['id'],
+                            'user_id': expected_org,
+                            'content': 'Aplicación aceptada' if action == 'accept' else 'Aplicación rechazada',
+                        }).execute()
+            except Exception:
+                pass
+
+            if action == 'reject':
+                return Response({'ok': True, 'status': 'rejected'})
+
+            # On accept: add applicant to group chat and trip membership
+            # 1) Find group chat room (created at trip creation)
+            group_room = None
+            try:
+                gr = admin.table('chat_rooms').select('*').eq('trip_id', trip_id).limit(1).execute()
+                group_room = (getattr(gr, 'data', None) or [None])[0]
+                if not group_room:
+                    # Fallback by name
+                    gr2 = admin.table('chat_rooms').select('*').eq('name', f"Chat {trip.get('name')}").limit(1).execute()
+                    group_room = (getattr(gr2, 'data', None) or [None])[0]
+            except Exception:
+                group_room = None
+
+            # 2) Add to chat_members
+            try:
+                if group_room and group_room.get('id'):
+                    admin.table('chat_members').insert({ 'room_id': group_room['id'], 'user_id': str(applicant_id), 'role': 'member' }).execute()
+            except Exception:
+                pass
+
+            # 3) Add to trip_members
+            try:
+                admin.table('trip_members').insert({ 'trip_id': trip_id, 'user_id': str(applicant_id), 'role': 'member' }).execute()
+            except Exception:
+                pass
+
+            return Response({'ok': True, 'status': 'accepted'})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
