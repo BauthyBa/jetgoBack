@@ -40,6 +40,7 @@ create table public.trips (
   room_type text,
   season text,
   country text,
+  max_participants integer,
   date timestamptz, -- legacy compatibility
   created_at timestamptz not null default now()
 );

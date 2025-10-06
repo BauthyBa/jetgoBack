@@ -128,10 +128,45 @@ class TripCreateView(APIView):
         creator_id = str(payload.get('creator_id') or '')
         origin = payload.get('origin')
         destination = payload.get('destination')
+        country = payload.get('country')
+        budget_min = payload.get('budget_min')
+        budget_max = payload.get('budget_max')
+        status_val = payload.get('status')
+        room_type = payload.get('room_type')
+        season = payload.get('season')
+        max_participants = payload.get('max_participants')
         date_iso = payload.get('date')
         name = payload.get('name') or f"Viaje {origin or ''}-{destination or ''}"
         if not creator_id:
             return Response({'ok': False, 'error': 'creator_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Required fields validation
+        required_missing = []
+        def add_if_missing(key, val):
+            if val is None or (isinstance(val, str) and len(val.strip()) == 0):
+                required_missing.append(key)
+        add_if_missing('name', name)
+        add_if_missing('origin', origin)
+        add_if_missing('destination', destination)
+        add_if_missing('country', country)
+        add_if_missing('budget_min', budget_min)
+        add_if_missing('budget_max', budget_max)
+        add_if_missing('status', status_val)
+        add_if_missing('room_type', room_type)
+        add_if_missing('max_participants', max_participants)
+        if required_missing:
+            return Response({'ok': False, 'error': f'Faltan campos requeridos: {", ".join(required_missing)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Coerce numeric fields
+        try:
+            budget_min_num = None if budget_min in (None, '') else float(budget_min)
+            budget_max_num = None if budget_max in (None, '') else float(budget_max)
+            max_participants_num = int(max_participants) if max_participants not in (None, '') else None
+        except Exception:
+            return Response({'ok': False, 'error': 'Campos numéricos inválidos'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if max_participants_num is not None and max_participants_num <= 0:
+            return Response({'ok': False, 'error': 'max_participants debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
 
         new_trip = None
         new_room = None
@@ -147,6 +182,13 @@ class TripCreateView(APIView):
                 'destination': destination,
                 'date': date_iso,
                 'name': name,
+                'country': country,
+                'budget_min': budget_min_num,
+                'budget_max': budget_max_num,
+                'status': status_val,
+                'room_type': room_type,
+                'season': season,
+                'max_participants': max_participants_num,
             }
             if image_url:
                 try:
@@ -227,7 +269,7 @@ class JoinTripView(APIView):
                 return Response({'ok': False, 'error': 'trip_id y user_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
 
             # Verificar que el viaje exista
-            trip_resp = admin.table('trips').select('id,name,creator_id').eq('id', trip_id).limit(1).execute()
+            trip_resp = admin.table('trips').select('id,name,creator_id,max_participants').eq('id', trip_id).limit(1).execute()
             trip = (getattr(trip_resp, 'data', None) or [None])[0]
             if not trip:
                 return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
@@ -262,6 +304,16 @@ class JoinTripView(APIView):
                         room = guessed
                 else:
                     return Response({'ok': False, 'error': 'No hay sala para este viaje'}, status=status.HTTP_404_NOT_FOUND)
+
+            # Enforce capacity: count current members and compare
+            try:
+                members_count_resp = admin.table('trip_members').select('id', count='exact').eq('trip_id', trip_id).execute()
+                current = getattr(members_count_resp, 'count', None)
+                cap = trip.get('max_participants') if trip else None
+                if isinstance(cap, int) and cap > 0 and isinstance(current, int) and current >= cap:
+                    return Response({'ok': False, 'error': 'El viaje alcanzó el máximo de participantes'}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                pass
 
             # Crear membresía
             try:
