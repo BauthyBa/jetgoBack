@@ -2,7 +2,9 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.response import Response
-from .serializers import RegisterSerializer, LoginSerializer
+from .serializers import RegisterSerializer, LoginSerializer, ReviewSerializer, CreateReviewSerializer
+from .models import User, Review
+from django.db.models import Avg
 from api.supabase_client import get_supabase_admin
 from os import environ
 import re
@@ -449,3 +451,209 @@ class ListTripMembersView(APIView):
             return Response({'ok': True, 'members': enriched})
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CreateReviewView(APIView):
+    """Vista para crear una nueva reseña"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            reviewer_id = request.data.get('reviewer_id')
+            reviewed_user_id = request.data.get('reviewed_user_id')
+            rating = request.data.get('rating')
+            comment = request.data.get('comment', '')
+
+            if not reviewer_id or not reviewed_user_id or not rating:
+                return Response({
+                    'ok': False, 
+                    'error': 'reviewer_id, reviewed_user_id y rating son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Verificar que los usuarios existan
+            try:
+                reviewer = User.objects.get(id=reviewer_id)
+                reviewed_user = User.objects.get(id=reviewed_user_id)
+            except User.DoesNotExist:
+                return Response({
+                    'ok': False, 
+                    'error': 'Usuario no encontrado'
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            # Verificar que no se esté autoreseñando
+            if reviewer_id == reviewed_user_id:
+                return Response({
+                    'ok': False, 
+                    'error': 'No puedes dejarte una reseña a ti mismo'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Verificar que no exista ya una reseña
+            existing_review = Review.objects.filter(
+                reviewer=reviewer, 
+                reviewed_user=reviewed_user
+            ).first()
+
+            if existing_review:
+                # Actualizar reseña existente
+                existing_review.rating = rating
+                existing_review.comment = comment
+                existing_review.save()
+                serializer = ReviewSerializer(existing_review)
+                return Response({
+                    'ok': True, 
+                    'review': serializer.data,
+                    'message': 'Reseña actualizada exitosamente'
+                })
+            else:
+                # Crear nueva reseña
+                review = Review.objects.create(
+                    reviewer=reviewer,
+                    reviewed_user=reviewed_user,
+                    rating=rating,
+                    comment=comment
+                )
+                serializer = ReviewSerializer(review)
+                return Response({
+                    'ok': True, 
+                    'review': serializer.data,
+                    'message': 'Reseña creada exitosamente'
+                }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({
+                'ok': False, 
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GetUserReviewsView(APIView):
+    """Vista para obtener las reseñas de un usuario específico"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            user_id = request.query_params.get('user_id')
+            
+            if not user_id:
+                return Response({
+                    'ok': False, 
+                    'error': 'user_id es requerido'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Verificar que el usuario exista
+            try:
+                user = User.objects.get(id=user_id)
+            except User.DoesNotExist:
+                return Response({
+                    'ok': False, 
+                    'error': 'Usuario no encontrado'
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            # Obtener todas las reseñas del usuario
+            reviews = Review.objects.filter(reviewed_user=user).select_related('reviewer')
+            serializer = ReviewSerializer(reviews, many=True)
+
+            # Calcular estadísticas
+            total_reviews = reviews.count()
+            avg_rating = reviews.aggregate(Avg('rating'))['rating__avg']
+            avg_rating = round(avg_rating, 1) if avg_rating else 0
+
+            # Contar reseñas por rating
+            rating_distribution = {}
+            for i in range(1, 6):
+                rating_distribution[str(i)] = reviews.filter(rating=i).count()
+
+            return Response({
+                'ok': True,
+                'reviews': serializer.data,
+                'statistics': {
+                    'total_reviews': total_reviews,
+                    'average_rating': avg_rating,
+                    'rating_distribution': rating_distribution
+                }
+            })
+
+        except Exception as e:
+            return Response({
+                'ok': False, 
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GetUserProfileView(APIView):
+    """Vista para obtener el perfil completo de un usuario incluyendo sus reseñas"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            user_id = request.query_params.get('user_id')
+            
+            if not user_id:
+                return Response({
+                    'ok': False, 
+                    'error': 'user_id es requerido'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Obtener información del usuario desde Supabase
+            admin = get_supabase_admin()
+            schema = environ.get('SUPABASE_SCHEMA', 'public')
+            table = environ.get('SUPABASE_USERS_TABLE', 'User')
+            
+            user_resp = admin.schema(schema).table(table).select('*').eq('userid', str(user_id)).limit(1).execute()
+            user_data = (getattr(user_resp, 'data', None) or [None])[0]
+            
+            if not user_data:
+                return Response({
+                    'ok': False, 
+                    'error': 'Usuario no encontrado'
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            # Obtener reseñas del usuario desde Django
+            try:
+                django_user = User.objects.get(id=user_id)
+                reviews = Review.objects.filter(reviewed_user=django_user).select_related('reviewer')
+                reviews_serializer = ReviewSerializer(reviews, many=True)
+
+                # Calcular estadísticas
+                total_reviews = reviews.count()
+                avg_rating = reviews.aggregate(Avg('rating'))['rating__avg']
+                avg_rating = round(avg_rating, 1) if avg_rating else 0
+
+                # Contar reseñas por rating
+                rating_distribution = {}
+                for i in range(1, 6):
+                    rating_distribution[str(i)] = reviews.filter(rating=i).count()
+
+                reviews_data = {
+                    'reviews': reviews_serializer.data,
+                    'statistics': {
+                        'total_reviews': total_reviews,
+                        'average_rating': avg_rating,
+                        'rating_distribution': rating_distribution
+                    }
+                }
+            except User.DoesNotExist:
+                # Si el usuario no existe en Django, crear datos vacíos para las reseñas
+                reviews_data = {
+                    'reviews': [],
+                    'statistics': {
+                        'total_reviews': 0,
+                        'average_rating': 0,
+                        'rating_distribution': {'1': 0, '2': 0, '3': 0, '4': 0, '5': 0}
+                    }
+                }
+
+            return Response({
+                'ok': True,
+                'user': user_data,
+                'reviews_data': reviews_data
+            })
+
+        except Exception as e:
+            return Response({
+                'ok': False, 
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)

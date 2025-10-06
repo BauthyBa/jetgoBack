@@ -2,7 +2,7 @@ from datetime import datetime
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import make_password
-from .models import User
+from .models import User, Review
 from api.supabase_client import get_supabase_admin, get_supabase_anon
 import logging
 logger = logging.getLogger(__name__)
@@ -227,4 +227,49 @@ class LoginSerializer(serializers.Serializer):
         attrs['supabase_access'] = session.access_token
         attrs['supabase_refresh'] = session.refresh_token
         return attrs
+
+
+class ReviewSerializer(serializers.ModelSerializer):
+    """Serializer para las reseñas de usuarios"""
+    reviewer_name = serializers.SerializerMethodField()
+    reviewed_user_name = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Review
+        fields = ['id', 'reviewer', 'reviewed_user', 'rating', 'comment', 
+                 'created_at', 'updated_at', 'reviewer_name', 'reviewed_user_name']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'reviewer_name', 'reviewed_user_name']
+    
+    def get_reviewer_name(self, obj):
+        """Obtiene el nombre completo del usuario que hace la reseña"""
+        return f"{obj.reviewer.first_name} {obj.reviewer.last_name}".strip()
+    
+    def get_reviewed_user_name(self, obj):
+        """Obtiene el nombre completo del usuario reseñado"""
+        return f"{obj.reviewed_user.first_name} {obj.reviewed_user.last_name}".strip()
+    
+    def validate(self, attrs):
+        """Validaciones personalizadas"""
+        reviewer = attrs.get('reviewer')
+        reviewed_user = attrs.get('reviewed_user')
+        
+        # No permitir que un usuario se reseñe a sí mismo
+        if reviewer == reviewed_user:
+            raise serializers.ValidationError("No puedes dejarte una reseña a ti mismo")
+        
+        return attrs
+
+
+class CreateReviewSerializer(serializers.ModelSerializer):
+    """Serializer específico para crear reseñas"""
+    
+    class Meta:
+        model = Review
+        fields = ['reviewed_user', 'rating', 'comment']
+    
+    def validate_rating(self, value):
+        """Valida que el rating esté entre 1 y 5"""
+        if value < 1 or value > 5:
+            raise serializers.ValidationError("La calificación debe estar entre 1 y 5 estrellas")
+        return value
 

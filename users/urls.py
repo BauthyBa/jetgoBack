@@ -9,6 +9,9 @@ from .views import (
     JoinTripView,
     ListTripMembersView,
     LeaveTripView,
+    CreateReviewView,
+    GetUserReviewsView,
+    GetUserProfileView,
 )
 
 
@@ -22,5 +25,9 @@ urlpatterns = [
     path('trips/join/', JoinTripView.as_view(), name='trip_join'),
     path('trips/members/', ListTripMembersView.as_view(), name='trip_members'),
     path('trips/leave/', LeaveTripView.as_view(), name='trip_leave'),
+    # URLs para reseñas
+    path('reviews/create/', CreateReviewView.as_view(), name='create_review'),
+    path('reviews/user/', GetUserReviewsView.as_view(), name='get_user_reviews'),
+    path('profile/user/', GetUserProfileView.as_view(), name='get_user_profile'),
 ]
 

@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 class UserManager(BaseUserManager):
@@ -47,5 +48,24 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
+class Review(models.Model):
+    """Modelo para las reseñas de usuarios"""
+    reviewer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reviews_given')
+    reviewed_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reviews_received')
+    rating = models.IntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Calificación de 1 a 5 estrellas"
+    )
+    comment = models.TextField(blank=True, null=True, help_text="Comentario opcional")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('reviewer', 'reviewed_user')
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.reviewer.email} -> {self.reviewed_user.email}: {self.rating} estrellas"
 
 # Create your models here.
