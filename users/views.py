@@ -214,12 +214,13 @@ class TripCreateView(APIView):
 
         # 2) Create chat room (tolerant to missing trip_id column)
         try:
-            room_payload = { 'name': f"Chat {name}", 'creator_id': creator_id }
+            room_payload = { 'name': f"Chat {name}", 'creator_id': creator_id, 'is_group': True }
             if new_trip and new_trip.get('id'):
                 try:
                     resp = admin.table('chat_rooms').insert({ **room_payload, 'trip_id': new_trip['id'] }).execute()
                     new_room = (getattr(resp, 'data', None) or [None])[0]
                 except Exception:
+                    # Fallback without trip_id but still mark as group
                     resp = admin.table('chat_rooms').insert(room_payload).execute()
                     new_room = (getattr(resp, 'data', None) or [None])[0]
             else:
@@ -372,15 +373,15 @@ class JoinTripView(APIView):
             if not trip:
                 return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
-            # Intentar encontrar sala por trip_id
+            # Intentar encontrar sala grupal por trip_id
             room = None
             try:
-                rooms = admin.table('chat_rooms').select('*').eq('trip_id', trip_id).limit(1).execute()
+                rooms = admin.table('chat_rooms').select('*').eq('trip_id', trip_id).eq('is_group', True).limit(1).execute()
                 room = (getattr(rooms, 'data', None) or [None])[0]
             except Exception:
                 room = None
 
-            # Si no existe, intentar localizar por nombre/creador y asignar trip_id (no crear una nueva)
+            # Si no existe, intentar localizar por nombre/creador y asignar trip_id y is_group (no crear una nueva)
             if not room:
                 try:
                     guess = (
@@ -396,8 +397,8 @@ class JoinTripView(APIView):
                     guessed = None
                 if guessed:
                     try:
-                        admin.table('chat_rooms').update({'trip_id': trip_id}).eq('id', guessed['id']).execute()
-                        room = guessed | {'trip_id': trip_id}
+                        admin.table('chat_rooms').update({'trip_id': trip_id, 'is_group': True}).eq('id', guessed['id']).execute()
+                        room = guessed | {'trip_id': trip_id, 'is_group': True}
                     except Exception:
                         room = guessed
                 else:
@@ -846,80 +847,117 @@ class ApplicationCreateSupabaseView(APIView):
             if not trip:
                 return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
-            # Insert application with status pending
-            app_payload = {
-                'trip_id': trip_id,
-                'applicant_id': str(applicant_id),
-                'status': 'pending',
-            }
-            if message:
-                app_payload['message'] = message
-            app_resp = admin.table('applications').insert(app_payload).execute()
-            application = (getattr(app_resp, 'data', None) or [None])[0]
-            if not application:
-                return Response({'ok': False, 'error': 'No se pudo crear la aplicación'}, status=status.HTTP_400_BAD_REQUEST)
+            # Check if application already exists (pending)
+            existing_app = None
+            try:
+                existing_resp = admin.table('applications').select('*').eq('trip_id', trip_id).eq('applicant_id', str(applicant_id)).eq('status', 'pending').limit(1).execute()
+                existing_app = (getattr(existing_resp, 'data', None) or [None])[0]
+            except Exception:
+                pass
 
-            # Find or create a private room between organizer and applicant for this trip
+            # Reuse existing application or create new one
+            if existing_app:
+                application = existing_app
+            else:
+                app_payload = {
+                    'trip_id': trip_id,
+                    'applicant_id': str(applicant_id),
+                    'status': 'pending',
+                }
+                if message:
+                    app_payload['message'] = message
+                try:
+                    app_resp = admin.table('applications').insert(app_payload).execute()
+                    application = (getattr(app_resp, 'data', None) or [None])[0]
+                    if not application:
+                        return Response({'ok': False, 'error': 'No se pudo crear la aplicación'}, status=status.HTTP_400_BAD_REQUEST)
+                except Exception as e:
+                    # If still getting unique constraint error, try fetching again
+                    if '23505' in str(e) or 'unique' in str(e).lower():
+                        try:
+                            existing_resp = admin.table('applications').select('*').eq('trip_id', trip_id).eq('applicant_id', str(applicant_id)).eq('status', 'pending').limit(1).execute()
+                            application = (getattr(existing_resp, 'data', None) or [None])[0]
+                            if not application:
+                                return Response({'ok': False, 'error': 'No se pudo crear la aplicación'}, status=status.HTTP_400_BAD_REQUEST)
+                        except Exception:
+                            return Response({'ok': False, 'error': f'Error al crear aplicación: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+                    else:
+                        return Response({'ok': False, 'error': f'Error al crear aplicación: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Find or create a private room between organizer and applicant using direct_conversations
+            organizer_id = str(trip.get('creator_id') or '')
+            user_a = organizer_id if organizer_id < str(applicant_id) else str(applicant_id)
+            user_b = str(applicant_id) if organizer_id < str(applicant_id) else organizer_id
+            
             room = None
             try:
-                # Candidate room ids where both users are members
-                creator_rooms = admin.table('chat_members').select('room_id').eq('user_id', str(trip.get('creator_id') or '')).execute()
-                applicant_rooms = admin.table('chat_members').select('room_id').eq('user_id', str(applicant_id)).execute()
-                creator_ids = {row['room_id'] for row in (getattr(creator_rooms, 'data', []) or []) if row and row.get('room_id')}
-                applicant_ids = {row['room_id'] for row in (getattr(applicant_rooms, 'data', []) or []) if row and row.get('room_id')}
-                common = list(creator_ids.intersection(applicant_ids))
-                if common:
+                # Check if conversation already exists
+                conv_resp = admin.table('direct_conversations').select('*').eq('user_a', user_a).eq('user_b', user_b).limit(1).execute()
+                conv = (getattr(conv_resp, 'data', None) or [None])[0]
+                
+                if conv and conv.get('room_id'):
+                    # Fetch existing room
+                    room_resp = admin.table('chat_rooms').select('*').eq('id', conv['room_id']).limit(1).execute()
+                    room = (getattr(room_resp, 'data', None) or [None])[0]
+                    
+                    # Always update room with current trip_id and application_id
                     try:
-                        # filter by trip and private-ish
-                        r = (
-                            admin.table('chat_rooms')
-                            .select('*')
-                            .in_('id', common)
-                            .eq('trip_id', trip_id)
-                            .limit(1)
-                            .execute()
-                        )
-                        room = (getattr(r, 'data', None) or [None])[0]
+                        updates = {
+                            'application_id': application['id'],
+                            'trip_id': trip_id,
+                        }
+                        admin.table('chat_rooms').update(updates).eq('id', room['id']).execute()
+                        for k, v in updates.items():
+                            room[k] = v
                     except Exception:
-                        room = None
-            except Exception:
-                room = None
-            if not room:
-                room_payload = {
-                    'name': f"Privado: {trip.get('name')}",
-                    'creator_id': str(trip.get('creator_id') or ''),
-                    'trip_id': trip_id,
-                    'application_id': application['id'],
-                    'is_group': False,
-                    'is_private': True,
-                }
-                try:
-                    room_resp = admin.table('chat_rooms').insert(room_payload).execute()
-                except Exception:
-                    # Fallback minimal set of columns
-                    minimal = {k: room_payload[k] for k in ['name', 'creator_id', 'trip_id', 'application_id']}
-                    room_resp = admin.table('chat_rooms').insert(minimal).execute()
-                room = (getattr(room_resp, 'data', None) or [None])[0]
-
-            # Add organizer and applicant as members (best-effort)
-            try:
-                if room:
-                    members = [
-                        { 'room_id': room['id'], 'user_id': str(trip.get('creator_id') or ''), 'role': 'owner' },
-                        { 'room_id': room['id'], 'user_id': str(applicant_id), 'role': 'member' },
-                    ]
+                        pass
+                else:
+                    # Create new private room
+                    room_payload = {
+                        'name': f"Privado: {trip.get('name')}",
+                        'creator_id': organizer_id,
+                        'trip_id': trip_id,
+                        'application_id': application['id'],
+                        'is_group': False,
+                        'is_private': True,
+                    }
                     try:
-                        admin.table('chat_members').insert(members).execute()
+                        room_resp = admin.table('chat_rooms').insert(room_payload).execute()
                     except Exception:
-                        for m in members:
-                            try:
-                                admin.table('chat_members').insert(m).execute()
-                            except Exception:
-                                pass
+                        # Fallback minimal set of columns
+                        minimal = {k: room_payload[k] for k in ['name', 'creator_id', 'trip_id', 'application_id']}
+                        room_resp = admin.table('chat_rooms').insert(minimal).execute()
+                    room = (getattr(room_resp, 'data', None) or [None])[0]
+                    
+                    if room:
+                        # Create direct_conversations entry
+                        try:
+                            admin.table('direct_conversations').insert({
+                                'user_a': user_a,
+                                'user_b': user_b,
+                                'room_id': room['id']
+                            }).execute()
+                        except Exception:
+                            pass
+                        
+                        # Add both users as members
+                        members = [
+                            { 'room_id': room['id'], 'user_id': organizer_id, 'role': 'owner' },
+                            { 'room_id': room['id'], 'user_id': str(applicant_id), 'role': 'member' },
+                        ]
+                        try:
+                            admin.table('chat_members').insert(members).execute()
+                        except Exception:
+                            for m in members:
+                                try:
+                                    admin.table('chat_members').insert(m).execute()
+                                except Exception:
+                                    pass
             except Exception:
                 pass
 
             # Initial message from applicant (tagged so frontend can render actions inside the bubble)
+            # Always send message if provided (even if reusing application/room)
             try:
                 if room and message:
                     tagged = f"APP|{application['id']}|{message}"
@@ -1022,15 +1060,22 @@ class ApplicationRespondSupabaseView(APIView):
                 return Response({'ok': True, 'status': 'rejected'})
 
             # On accept: add applicant to group chat and trip membership
-            # 1) Find group chat room (created at trip creation)
+            # 1) Find group chat room (created at trip creation, marked as is_group=true)
             group_room = None
             try:
-                gr = admin.table('chat_rooms').select('*').eq('trip_id', trip_id).limit(1).execute()
+                gr = admin.table('chat_rooms').select('*').eq('trip_id', trip_id).eq('is_group', True).limit(1).execute()
                 group_room = (getattr(gr, 'data', None) or [None])[0]
                 if not group_room:
-                    # Fallback by name
+                    # Fallback by name and mark as group if found
                     gr2 = admin.table('chat_rooms').select('*').eq('name', f"Chat {trip.get('name')}").limit(1).execute()
                     group_room = (getattr(gr2, 'data', None) or [None])[0]
+                    if group_room:
+                        try:
+                            admin.table('chat_rooms').update({'is_group': True, 'trip_id': trip_id}).eq('id', group_room['id']).execute()
+                            group_room['is_group'] = True
+                            group_room['trip_id'] = trip_id
+                        except Exception:
+                            pass
             except Exception:
                 group_room = None
 
