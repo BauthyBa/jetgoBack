@@ -1,6 +1,7 @@
 from rest_framework import generics, permissions, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from .models import Trip, Application, TripParticipant
@@ -10,12 +11,10 @@ from .serializers import (
     TripParticipantSerializer
 )
 from api.supabase_client import get_supabase_admin
-from datetime import datetime
+from datetime import datetime, date
 import logging
 
 logger = logging.getLogger(__name__)
-
-
 class TripListCreateView(generics.ListCreateAPIView):
     """Listar y crear viajes"""
     
@@ -53,6 +52,36 @@ class TripListCreateView(generics.ListCreateAPIView):
         return queryset
     
     def perform_create(self, serializer):
+        # Validaciones antes de crear el viaje
+        validated_data = serializer.validated_data
+        
+        # Validación de presupuesto
+        budget_min = validated_data.get('budget_min')
+        budget_max = validated_data.get('budget_max')
+        
+        if budget_min is not None and budget_min < 0:
+            raise ValidationError({'budget_min': 'El presupuesto mínimo no puede ser menor a 0'})
+        
+        if budget_max is not None and budget_max < 0:
+            raise ValidationError({'budget_max': 'El presupuesto máximo no puede ser menor a 0'})
+        
+        if budget_min is not None and budget_max is not None and budget_min > budget_max:
+            raise ValidationError({'budget_min': 'El presupuesto mínimo no puede ser mayor al máximo'})
+        
+        # Validación de fechas
+        start_date = validated_data.get('start_date')
+        end_date = validated_data.get('end_date')
+        today = date.today()
+        
+        if start_date and start_date < today:
+            raise ValidationError({'start_date': 'La fecha de inicio no puede ser anterior al día de hoy'})
+        
+        if end_date and end_date < today:
+            raise ValidationError({'end_date': 'La fecha de fin no puede ser anterior al día de hoy'})
+        
+        if start_date and end_date and start_date > end_date:
+            raise ValidationError({'start_date': 'La fecha de inicio no puede ser posterior a la fecha de fin'})
+        
         trip = serializer.save(creator=self.request.user)
         # Registrar al creador como participante
         try:
@@ -77,6 +106,39 @@ class TripDetailView(generics.RetrieveUpdateDestroyAPIView):
         if self.request.method == 'GET':
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated()]
+    
+    def perform_update(self, serializer):
+        # Validaciones antes de actualizar el viaje
+        validated_data = serializer.validated_data
+        
+        # Validación de presupuesto
+        budget_min = validated_data.get('budget_min')
+        budget_max = validated_data.get('budget_max')
+        
+        if budget_min is not None and budget_min < 0:
+            raise ValidationError({'budget_min': 'El presupuesto mínimo no puede ser menor a 0'})
+        
+        if budget_max is not None and budget_max < 0:
+            raise ValidationError({'budget_max': 'El presupuesto máximo no puede ser menor a 0'})
+        
+        if budget_min is not None and budget_max is not None and budget_min > budget_max:
+            raise ValidationError({'budget_min': 'El presupuesto mínimo no puede ser mayor al máximo'})
+        
+        # Validación de fechas
+        start_date = validated_data.get('start_date')
+        end_date = validated_data.get('end_date')
+        today = date.today()
+        
+        if start_date and start_date < today:
+            raise ValidationError({'start_date': 'La fecha de inicio no puede ser anterior al día de hoy'})
+        
+        if end_date and end_date < today:
+            raise ValidationError({'end_date': 'La fecha de fin no puede ser anterior al día de hoy'})
+        
+        if start_date and end_date and start_date > end_date:
+            raise ValidationError({'start_date': 'La fecha de inicio no puede ser posterior a la fecha de fin'})
+        
+        serializer.save()
 
 
 class ApplicationCreateView(generics.CreateAPIView):
