@@ -911,6 +911,33 @@ class ApplicationCreateSupabaseView(APIView):
                             room[k] = v
                     except Exception:
                         pass
+                    
+                    # Ensure both users are members (in case membership was deleted or incomplete)
+                    if room:
+                        try:
+                            # Check existing memberships
+                            existing_mems = admin.table('chat_members').select('user_id').eq('room_id', room['id']).execute()
+                            existing_ids = {str(m.get('user_id')) for m in (getattr(existing_mems, 'data', []) or [])}
+                            
+                            # Add missing members
+                            members_to_add = []
+                            if str(organizer_id) not in existing_ids:
+                                members_to_add.append({ 'room_id': room['id'], 'user_id': organizer_id, 'role': 'owner' })
+                            if str(applicant_id) not in existing_ids:
+                                members_to_add.append({ 'room_id': room['id'], 'user_id': str(applicant_id), 'role': 'member' })
+                            
+                            if members_to_add:
+                                try:
+                                    admin.table('chat_members').insert(members_to_add).execute()
+                                except Exception:
+                                    # Fallback: insert one by one
+                                    for m in members_to_add:
+                                        try:
+                                            admin.table('chat_members').insert(m).execute()
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
                 else:
                     # Create new private room
                     room_payload = {
