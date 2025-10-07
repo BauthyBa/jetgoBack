@@ -23,6 +23,12 @@ from .supabase_views import (
     SupabaseMarkNotificationReadView,
     SupabaseMarkAllNotificationsReadView,
 )
+from .reports_views import (
+    CreateUserReportView,
+    GetUserReportsView,
+    CheckUserSuspensionView,
+    GetReportReasonsView,
+)
 
 
 urlpatterns = [
@@ -50,5 +56,11 @@ urlpatterns = [
     path('supabase/notifications/', SupabaseGetUserNotificationsView.as_view(), name='get_notifications'),
     path('supabase/notifications/read/', SupabaseMarkNotificationReadView.as_view(), name='mark_notification_read'),
     path('supabase/notifications/read-all/', SupabaseMarkAllNotificationsReadView.as_view(), name='mark_all_notifications_read'),
+    
+    # URLs para reportes de usuarios
+    path('reports/create/', CreateUserReportView.as_view(), name='create_user_report'),
+    path('reports/user/', GetUserReportsView.as_view(), name='get_user_reports'),
+    path('reports/suspension/', CheckUserSuspensionView.as_view(), name='check_user_suspension'),
+    path('reports/reasons/', GetReportReasonsView.as_view(), name='get_report_reasons'),
 ]
 
