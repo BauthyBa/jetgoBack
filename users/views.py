@@ -238,7 +238,7 @@ class TripCreateView(APIView):
         # 3b) Trip membership owner (best effort)
         if new_trip and new_trip.get('id'):
             try:
-                admin.table('trip_members').insert({ 'trip_id': new_trip['id'], 'user_id': creator_id, 'role': 'owner' }).execute()
+                admin.table('trip_members').insert({ 'trip_id': new_trip['id'], 'user_id': str(creator_id), 'role': 'owner' }).execute()
             except Exception:
                 pass
 
@@ -421,7 +421,7 @@ class JoinTripView(APIView):
                 pass
             # Crear membresía en trip_members también
             try:
-                admin.table('trip_members').insert({ 'trip_id': trip_id, 'user_id': user_id, 'role': 'member' }).execute()
+                admin.table('trip_members').insert({ 'trip_id': trip_id, 'user_id': str(user_id), 'role': 'member' }).execute()
             except Exception:
                 pass
             return Response({'ok': True, 'room_id': room['id']})
@@ -532,6 +532,107 @@ class ListTripMembersView(APIView):
                     name_map = {}
             enriched = [{ 'user_id': str(m.get('user_id')), 'name': name_map.get(str(m.get('user_id')))} for m in members]
             return Response({'ok': True, 'members': enriched})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ChatMembersView(APIView):
+    """Endpoint para obtener miembros de un chat usando admin de Supabase (bypass RLS)"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            room_id = request.query_params.get('room_id')
+            
+            if not room_id:
+                return Response({'ok': False, 'error': 'room_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get chat members for this room using admin (bypasses RLS)
+            members_resp = admin.table('chat_members').select('*').eq('room_id', room_id).execute()
+            members = getattr(members_resp, 'data', []) or []
+            
+            # Get user names for the members
+            user_ids = [m.get('user_id') for m in members if m.get('user_id')]
+            name_map = {}
+            if user_ids:
+                try:
+                    users_resp = admin.table('User').select('userid,nombre,apellido').in_('userid', user_ids).execute()
+                    users = getattr(users_resp, 'data', []) or []
+                    for user in users:
+                        full_name = f"{user.get('nombre', '')} {user.get('apellido', '')}".strip()
+                        if full_name:
+                            name_map[user.get('userid')] = full_name
+                except Exception as e:
+                    print(f"Error fetching user names: {e}")
+            
+            # Enrich members with names
+            enriched_members = []
+            for member in members:
+                user_id = member.get('user_id')
+                name = name_map.get(user_id, 'Usuario')
+                enriched_members.append({
+                    'user_id': user_id,
+                    'role': member.get('role'),
+                    'name': name
+                })
+            
+            return Response({'ok': True, 'members': enriched_members, 'count': len(enriched_members)})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DebugChatMembersView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            room_id = request.query_params.get('room_id')
+            
+            if room_id == 'all':
+                # List all chat rooms
+                rooms_resp = admin.table('chat_rooms').select('*').execute()
+                rooms = getattr(rooms_resp, 'data', []) or []
+                return Response({'ok': True, 'rooms': rooms, 'count': len(rooms)})
+            
+            if not room_id:
+                return Response({'ok': False, 'error': 'room_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get chat members for this room
+            print(f"🔍 DebugChatMembersView: room_id={room_id}")
+            members_resp = admin.table('chat_members').select('*').eq('room_id', room_id).execute()
+            members = getattr(members_resp, 'data', []) or []
+            print(f"🔍 DebugChatMembersView: found {len(members)} members")
+            
+            return Response({'ok': True, 'members': members, 'count': len(members)})
+        except Exception as e:
+            print(f"🔍 DebugChatMembersView error: {str(e)}")
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def post(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            room_id = request.data.get('room_id')
+            user_id = request.data.get('user_id')
+            role = request.data.get('role', 'member')
+            
+            if not room_id or not user_id:
+                return Response({'ok': False, 'error': 'room_id y user_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Try to insert member
+            try:
+                result = admin.table('chat_members').insert({
+                    'room_id': room_id,
+                    'user_id': user_id,
+                    'role': role
+                }).execute()
+                
+                return Response({'ok': True, 'result': result.data if hasattr(result, 'data') else 'inserted'})
+            except Exception as insert_error:
+                return Response({'ok': False, 'error': f'Error inserting: {str(insert_error)}'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

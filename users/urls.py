@@ -15,6 +15,8 @@ from .views import (
     GetUserProfileView,
     ApplicationCreateSupabaseView,
     ApplicationRespondSupabaseView,
+    ChatMembersView,
+    DebugChatMembersView,
 )
 from .supabase_views import (
     SupabaseCreateReviewView,
@@ -42,6 +44,8 @@ urlpatterns = [
     path('trips/join/', JoinTripView.as_view(), name='trip_join'),
     path('trips/members/', ListTripMembersView.as_view(), name='trip_members'),
     path('trips/leave/', LeaveTripView.as_view(), name='trip_leave'),
+    path('debug/chat-members/', DebugChatMembersView.as_view(), name='debug_chat_members'),
+    path('chat-members/', ChatMembersView.as_view(), name='chat_members'),
     # Applications (Supabase-backed)
     path('applications/', ApplicationCreateSupabaseView.as_view(), name='applications_create'),
     path('applications/respond/', ApplicationRespondSupabaseView.as_view(), name='applications_respond'),
