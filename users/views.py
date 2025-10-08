@@ -133,6 +133,7 @@ class TripCreateView(APIView):
         country = payload.get('country')
         budget_min = payload.get('budget_min')
         budget_max = payload.get('budget_max')
+        currency = payload.get('currency', 'USD')
         status_val = payload.get('status')
         room_type = payload.get('room_type')
         season = payload.get('season')
@@ -187,6 +188,7 @@ class TripCreateView(APIView):
                 'country': country,
                 'budget_min': budget_min_num,
                 'budget_max': budget_max_num,
+                'currency': currency,
                 'status': status_val,
                 'room_type': room_type,
                 'season': season,
@@ -299,6 +301,7 @@ class TripUpdateView(APIView):
             set_if_present('country', 'country')
             set_if_present('budget_min', 'budget_min', float)
             set_if_present('budget_max', 'budget_max', float)
+            set_if_present('currency', 'currency')
             set_if_present('status', 'status')
             set_if_present('room_type', 'room_type')
             set_if_present('season', 'season')
