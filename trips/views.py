@@ -436,6 +436,32 @@ def trip_participants(request, trip_id):
     return Response(serializer.data)
 
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def user_participating_trips(request):
+    """Obtener viajes donde el usuario es participante"""
+    try:
+        user = request.user
+        
+        # Obtener viajes donde el usuario es participante (creador o miembro)
+        participating_trips = Trip.objects.filter(
+            Q(creator=user) | Q(participants__user=user)
+        ).distinct().order_by('-created_at')
+        
+        serializer = TripListSerializer(participating_trips, many=True)
+        return Response({
+            'ok': True,
+            'trips': serializer.data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo viajes del usuario {request.user.id}: {e}")
+        return Response({
+            'ok': False,
+            'error': 'Error interno del servidor'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def create_group_chat(request, trip_id):
