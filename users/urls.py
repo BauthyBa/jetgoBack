@@ -13,6 +13,7 @@ from .views import (
     CreateReviewView,
     GetUserReviewsView,
     GetUserProfileView,
+    GetUserAvatarView,
     ApplicationCreateSupabaseView,
     ApplicationRespondSupabaseView,
     ChatMembersView,
@@ -66,6 +67,7 @@ urlpatterns = [
     path('reviews/create/', CreateReviewView.as_view(), name='create_review'),
     path('reviews/user/', GetUserReviewsView.as_view(), name='get_user_reviews'),
     path('profile/user/', GetUserProfileView.as_view(), name='get_user_profile'),
+    path('profile/avatar/', GetUserAvatarView.as_view(), name='get_user_avatar'),
     
     # URLs para reseñas y notificaciones (Supabase)
     path('supabase/reviews/create/', SupabaseCreateReviewView.as_view(), name='supabase_create_review'),

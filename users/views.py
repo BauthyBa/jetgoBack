@@ -820,6 +820,42 @@ class CreateReviewView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
 
+class GetUserAvatarView(APIView):
+    """Vista para obtener el avatar_url de un usuario específico"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, *args, **kwargs):
+        try:
+            user_id = request.query_params.get('user_id')
+            if not user_id:
+                return Response({
+                    'ok': False, 
+                    'error': 'user_id requerido'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Obtener avatar_url desde Supabase Auth usando admin
+            admin = get_supabase_admin()
+            try:
+                user_resp = admin.auth.admin.get_user_by_id(user_id)
+                avatar_url = user_resp.user.user_metadata.get('avatar_url', '') if user_resp.user else ''
+                
+                return Response({
+                    'ok': True,
+                    'avatar_url': avatar_url
+                })
+            except Exception as e:
+                return Response({
+                    'ok': False, 
+                    'error': f'Error obteniendo avatar: {str(e)}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            return Response({
+                'ok': False, 
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
 class GetUserReviewsView(APIView):
     """Vista para obtener las reseñas de un usuario específico"""
     permission_classes = [permissions.AllowAny]
