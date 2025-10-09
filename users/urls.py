@@ -17,6 +17,12 @@ from .views import (
     ApplicationRespondSupabaseView,
     ChatMembersView,
     DebugChatMembersView,
+    TripHistoryView,
+    CompleteTripView,
+    RateTripView,
+    AutoCompleteTripsView,
+    UpdateTripDatesView,
+    AddMissingTripHistoryView,
 )
 from .supabase_views import (
     SupabaseCreateReviewView,
@@ -46,6 +52,13 @@ urlpatterns = [
     path('trips/leave/', LeaveTripView.as_view(), name='trip_leave'),
     path('debug/chat-members/', DebugChatMembersView.as_view(), name='debug_chat_members'),
     path('chat-members/', ChatMembersView.as_view(), name='chat_members'),
+    # Trip history
+    path('trip-history/', TripHistoryView.as_view(), name='trip_history'),
+    path('trips/complete/', CompleteTripView.as_view(), name='trip_complete'),
+    path('trips/rate/', RateTripView.as_view(), name='trip_rate'),
+    path('trips/auto-complete/', AutoCompleteTripsView.as_view(), name='trip_auto_complete'),
+    path('trips/update-dates/', UpdateTripDatesView.as_view(), name='trip_update_dates'),
+    path('trips/add-missing-history/', AddMissingTripHistoryView.as_view(), name='trip_add_missing_history'),
     # Applications (Supabase-backed)
     path('applications/', ApplicationCreateSupabaseView.as_view(), name='applications_create'),
     path('applications/respond/', ApplicationRespondSupabaseView.as_view(), name='applications_respond'),

@@ -8,7 +8,53 @@ from django.db.models import Avg
 from api.supabase_client import get_supabase_admin
 from os import environ
 import re
+from datetime import datetime, date
 import requests
+
+
+def calculate_trip_status(start_date, end_date=None):
+    """
+    Calcula el estado de un viaje basado en las fechas:
+    - upcoming: si la fecha de inicio es en el futuro
+    - active: si estamos entre la fecha de inicio y fin (o solo inicio si no hay fin)
+    - completed: si la fecha de fin ya pasó (o la fecha de inicio si no hay fin)
+    """
+    if not start_date:
+        return 'upcoming'
+    
+    try:
+        # Convertir string a date si es necesario
+        if isinstance(start_date, str):
+            start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+        
+        today = date.today()
+        
+        # Si hay fecha de fin
+        if end_date:
+            if isinstance(end_date, str):
+                end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00')).date()
+            elif isinstance(end_date, datetime):
+                end_date = end_date.date()
+            
+            if today < start_date:
+                return 'upcoming'
+            elif start_date <= today <= end_date:
+                return 'active'
+            else:
+                return 'completed'
+        else:
+            # Solo fecha de inicio
+            if today < start_date:
+                return 'upcoming'
+            elif today == start_date:
+                return 'active'
+            else:
+                return 'completed'
+                
+    except Exception:
+        return 'upcoming'
 
 
 class RegisterView(generics.CreateAPIView):
@@ -134,11 +180,11 @@ class TripCreateView(APIView):
         budget_min = payload.get('budget_min')
         budget_max = payload.get('budget_max')
         currency = payload.get('currency', 'USD')
-        status_val = payload.get('status')
+        # status_val ya no es necesario, se calcula automáticamente
         room_type = payload.get('room_type')
         season = payload.get('season')
         max_participants = payload.get('max_participants')
-        date_iso = payload.get('date')
+        date_iso = payload.get('start_date') or payload.get('date')  # Compatibilidad con ambos nombres
         name = payload.get('name') or f"Viaje {origin or ''}-{destination or ''}"
         if not creator_id:
             return Response({'ok': False, 'error': 'creator_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
@@ -154,7 +200,7 @@ class TripCreateView(APIView):
         add_if_missing('country', country)
         add_if_missing('budget_min', budget_min)
         add_if_missing('budget_max', budget_max)
-        add_if_missing('status', status_val)
+        # status ya no es requerido, se calcula automáticamente
         add_if_missing('room_type', room_type)
         add_if_missing('max_participants', max_participants)
         if required_missing:
@@ -179,17 +225,22 @@ class TripCreateView(APIView):
         try:
             # Allow optional image_url passthrough if provided by frontend
             image_url = payload.get('image_url')
+            # Calcular estado automáticamente basado en fechas
+            auto_status = calculate_trip_status(date_iso, payload.get('end_date'))
+            
             trip_row = {
                 'creator_id': creator_id,
                 'origin': origin,
                 'destination': destination,
-                'date': date_iso,
+                'date': date_iso,  # Para compatibilidad
+                'start_date': date_iso,  # Columna principal
+                'end_date': payload.get('end_date'),
                 'name': name,
                 'country': country,
                 'budget_min': budget_min_num,
                 'budget_max': budget_max_num,
                 'currency': currency,
-                'status': status_val,
+                'status': auto_status,
                 'room_type': room_type,
                 'season': season,
                 'max_participants': max_participants_num,
@@ -293,20 +344,32 @@ class TripUpdateView(APIView):
             set_if_present('name', 'name')
             set_if_present('origin', 'origin')
             set_if_present('destination', 'destination')
-            # Store start_date in 'date' column for compatibility
+            # Handle start_date - try both column names for compatibility
             sd = payload.get('start_date')
             if sd is not None:
-                update_row['date'] = sd if not (isinstance(sd, str) and sd.strip() == '') else None
+                if not (isinstance(sd, str) and sd.strip() == ''):
+                    # Try to update both 'date' and 'start_date' columns
+                    update_row['date'] = sd
+                    update_row['start_date'] = sd
+                else:
+                    update_row['date'] = None
+                    update_row['start_date'] = None
             set_if_present('end_date', 'end_date')
             set_if_present('country', 'country')
             set_if_present('budget_min', 'budget_min', float)
             set_if_present('budget_max', 'budget_max', float)
             set_if_present('currency', 'currency')
-            set_if_present('status', 'status')
             set_if_present('room_type', 'room_type')
             set_if_present('season', 'season')
             set_if_present('max_participants', 'max_participants', int)
             set_if_present('image_url', 'image_url')
+
+            # Calcular estado automáticamente si se actualizan fechas
+            if 'date' in update_row or 'end_date' in update_row:
+                start_date = update_row.get('date') or current.get('date')
+                end_date = update_row.get('end_date') or current.get('end_date')
+                auto_status = calculate_trip_status(start_date, end_date)
+                update_row['status'] = auto_status
 
             if not update_row:
                 return Response({'ok': True, 'trip': current, 'message': 'Sin cambios'})
@@ -1224,5 +1287,474 @@ class ApplicationRespondSupabaseView(APIView):
                 pass
 
             return Response({'ok': True, 'status': 'accepted'})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TripHistoryView(APIView):
+    """Endpoint para obtener el historial de viajes de un usuario"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            user_id = request.query_params.get('user_id')
+            
+            if not user_id:
+                return Response({'ok': False, 'error': 'user_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get trip history for the user
+            history_resp = admin.table('trip_history').select('*').eq('user_id', user_id).order('created_at', desc=True).execute()
+            history = getattr(history_resp, 'data', []) or []
+            
+            # Get trip details for each history entry
+            enriched_history = []
+            for entry in history:
+                try:
+                    # Get trip details
+                    trip_resp = admin.table('trips').select('*').eq('id', entry.get('trip_id')).limit(1).execute()
+                    trip = (getattr(trip_resp, 'data', None) or [None])[0]
+                    
+                    if trip:
+                        enriched_entry = {
+                            'id': entry.get('id'),
+                            'trip_id': entry.get('trip_id'),
+                            'role': entry.get('role'),
+                            'status': entry.get('status'),
+                            'joined_at': entry.get('joined_at'),
+                            'left_at': entry.get('left_at'),
+                            'rating_given': entry.get('rating_given'),
+                            'review_text': entry.get('review_text'),
+                            'created_at': entry.get('created_at'),
+                            'trip_details': {
+                                'name': trip.get('name'),
+                                'origin': trip.get('origin'),
+                                'destination': trip.get('destination'),
+                                'date': trip.get('date'),
+                                'country': trip.get('country'),
+                                'image_url': trip.get('image_url')
+                            }
+                        }
+                        enriched_history.append(enriched_entry)
+                except Exception as e:
+                    print(f"Error enriching trip history entry: {e}")
+                    continue
+            
+            return Response({'ok': True, 'history': enriched_history, 'count': len(enriched_history)})
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CompleteTripView(APIView):
+    """Endpoint para marcar un viaje como completado y agregar todos los participantes al historial"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            payload = request.data or {}
+            trip_id = payload.get('trip_id')
+            creator_id = payload.get('creator_id')
+            
+            if not trip_id:
+                return Response({'ok': False, 'error': 'trip_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            if not creator_id:
+                return Response({'ok': False, 'error': 'creator_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Verificar que el usuario es el creador del viaje
+            trip_resp = admin.table('trips').select('creator_id').eq('id', trip_id).limit(1).execute()
+            trip = (getattr(trip_resp, 'data', None) or [None])[0]
+            if not trip or str(trip.get('creator_id')) != str(creator_id):
+                return Response({'ok': False, 'error': 'Solo el creador puede marcar el viaje como completado'}, status=status.HTTP_403_FORBIDDEN)
+            
+            # Buscar el chat GRUPAL del viaje (no los chats privados)
+            chat_resp = admin.table('chat_rooms').select('id').eq('trip_id', trip_id).eq('is_group', True).limit(1).execute()
+            chat_room = (getattr(chat_resp, 'data', None) or [None])[0]
+            
+            if chat_room:
+                # Obtener miembros del chat
+                members_resp = admin.table('chat_members').select('user_id, role').eq('room_id', chat_room.get('id')).execute()
+                members = getattr(members_resp, 'data', []) or []
+            else:
+                members = []
+            
+            # Agregar cada miembro al historial de viajes
+            history_entries = []
+            for member in members:
+                try:
+                    # Mapear role de chat_members a trip_history
+                    member_role = member.get('role')
+                    if member_role == 'owner':
+                        history_role = 'organizer'
+                    else:
+                        history_role = 'member'
+                        
+                    history_entry = {
+                        'user_id': member.get('user_id'),
+                        'trip_id': trip_id,
+                        'role': history_role,
+                        'status': 'completed',
+                        'joined_at': trip.get('date'),  # Usar la fecha del viaje como fecha de unión
+                        'left_at': None,
+                        'rating_given': None,
+                        'review_text': None
+                    }
+                    history_entries.append(history_entry)
+                except Exception as e:
+                    print(f"Error creating history entry for user {member.get('user_id')}: {e}")
+                    continue
+            
+            # Insertar todas las entradas del historial
+            if history_entries:
+                admin.table('trip_history').insert(history_entries).execute()
+            
+            # Actualizar el estado del viaje a completado
+            admin.table('trips').update({'status': 'completed'}).eq('id', trip_id).execute()
+            
+            return Response({
+                'ok': True, 
+                'message': f'Viaje marcado como completado. {len(history_entries)} participantes agregados al historial.',
+                'participants_added': len(history_entries)
+            })
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RateTripView(APIView):
+    """Endpoint para calificar y reseñar un viaje completado"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            payload = request.data or {}
+            user_id = payload.get('user_id')
+            trip_id = payload.get('trip_id')
+            rating = payload.get('rating')
+            review_text = payload.get('review_text', '')
+            
+            if not user_id:
+                return Response({'ok': False, 'error': 'user_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            if not trip_id:
+                return Response({'ok': False, 'error': 'trip_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            if not rating:
+                return Response({'ok': False, 'error': 'rating requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Validar rating
+            try:
+                rating = int(rating)
+                if rating < 1 or rating > 5:
+                    return Response({'ok': False, 'error': 'Rating debe estar entre 1 y 5'}, status=status.HTTP_400_BAD_REQUEST)
+            except ValueError:
+                return Response({'ok': False, 'error': 'Rating debe ser un número'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Verificar que el usuario participó en el viaje
+            history_resp = admin.table('trip_history').select('*').eq('user_id', user_id).eq('trip_id', trip_id).eq('status', 'completed').limit(1).execute()
+            history_entry = (getattr(history_resp, 'data', None) or [None])[0]
+            
+            if not history_entry:
+                return Response({'ok': False, 'error': 'No se encontró el viaje en tu historial'}, status=status.HTTP_404_NOT_FOUND)
+            
+            # Actualizar la entrada del historial con la calificación
+            update_data = {
+                'rating_given': rating,
+                'review_text': review_text.strip() if review_text else None,
+                'updated_at': 'now()'
+            }
+            
+            admin.table('trip_history').update(update_data).eq('id', history_entry.get('id')).execute()
+            
+            return Response({
+                'ok': True, 
+                'message': 'Calificación y reseña guardadas exitosamente'
+            })
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AutoCompleteTripsView(APIView):
+    """Endpoint para marcar automáticamente viajes como completados cuando pasen las fechas"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            
+            # Obtener todos los viajes que deberían estar completados
+            today = date.today()
+            
+            # Buscar viajes activos o próximos que ya deberían estar completados
+            trips_resp = admin.table('trips').select('*').in_('status', ['active', 'upcoming']).execute()
+            trips = getattr(trips_resp, 'data', []) or []
+            
+            completed_trips = []
+            
+            for trip in trips:
+                try:
+                    # Verificar si el viaje debería estar completado
+                    start_date = trip.get('date')
+                    end_date = trip.get('end_date')
+                    
+                    if not start_date:
+                        continue
+                    
+                    # Convertir fechas
+                    if isinstance(start_date, str):
+                        start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
+                    elif isinstance(start_date, datetime):
+                        start_date = start_date.date()
+                    
+                    should_be_completed = False
+                    
+                    if end_date:
+                        if isinstance(end_date, str):
+                            end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00')).date()
+                        elif isinstance(end_date, datetime):
+                            end_date = end_date.date()
+                        
+                        # Si la fecha de fin ya pasó
+                        if today > end_date:
+                            should_be_completed = True
+                    else:
+                        # Si no hay fecha de fin, usar la fecha de inicio
+                        if today > start_date:
+                            should_be_completed = True
+                    
+                    if should_be_completed:
+                        # Marcar como completado
+                        admin.table('trips').update({'status': 'completed'}).eq('id', trip.get('id')).execute()
+                        
+                        # Buscar el chat GRUPAL del viaje (no los chats privados)
+                        chat_resp = admin.table('chat_rooms').select('id').eq('trip_id', trip.get('id')).eq('is_group', True).limit(1).execute()
+                        chat_room = (getattr(chat_resp, 'data', None) or [None])[0]
+                        
+                        if chat_room:
+                            # Obtener miembros del chat
+                            members_resp = admin.table('chat_members').select('user_id, role').eq('room_id', chat_room.get('id')).execute()
+                            members = getattr(members_resp, 'data', []) or []
+                        else:
+                            members = []
+                        
+                        history_entries = []
+                        for member in members:
+                            # Mapear role de chat_members a trip_history
+                            member_role = member.get('role')
+                            if member_role == 'owner':
+                                history_role = 'organizer'
+                            else:
+                                history_role = 'member'
+                                
+                            history_entry = {
+                                'user_id': member.get('user_id'),
+                                'trip_id': trip.get('id'),
+                                'role': history_role,
+                                'status': 'completed',
+                                'joined_at': start_date.isoformat(),
+                                'left_at': None,
+                                'rating_given': None,
+                                'review_text': None
+                            }
+                            history_entries.append(history_entry)
+                        
+                        if history_entries:
+                            admin.table('trip_history').insert(history_entries).execute()
+                        
+                        completed_trips.append({
+                            'id': trip.get('id'),
+                            'name': trip.get('name'),
+                            'participants_added': len(history_entries)
+                        })
+                        
+                except Exception as e:
+                    print(f"Error processing trip {trip.get('id')}: {e}")
+                    continue
+            
+            return Response({
+                'ok': True,
+                'message': f'Procesados {len(completed_trips)} viajes completados automáticamente',
+                'completed_trips': completed_trips
+            })
+            
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UpdateTripDatesView(APIView):
+    """Endpoint para actualizar fechas de viajes (para testing)"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            payload = request.data or {}
+            trip_id = payload.get('trip_id')
+            start_date = payload.get('start_date')
+            end_date = payload.get('end_date')
+            
+            if not trip_id:
+                return Response({'ok': False, 'error': 'trip_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Verificar que el viaje existe
+            trip_resp = admin.table('trips').select('*').eq('id', trip_id).limit(1).execute()
+            trip = (getattr(trip_resp, 'data', None) or [None])[0]
+            if not trip:
+                return Response({'ok': False, 'error': 'Viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+            
+            # Preparar actualización
+            update_data = {}
+            
+            if start_date:
+                update_data['date'] = start_date
+                update_data['start_date'] = start_date
+                
+            if end_date:
+                update_data['end_date'] = end_date
+                
+            # Recalcular estado automáticamente
+            if start_date or end_date:
+                final_start = start_date or trip.get('start_date') or trip.get('date')
+                final_end = end_date or trip.get('end_date')
+                auto_status = calculate_trip_status(final_start, final_end)
+                update_data['status'] = auto_status
+            
+            # Aplicar actualización
+            if update_data:
+                admin.table('trips').update(update_data).eq('id', trip_id).execute()
+                
+                # Si el viaje se marcó como completado automáticamente, agregar al historial
+                if update_data.get('status') == 'completed':
+                    # Buscar el chat GRUPAL del viaje (no los chats privados)
+                    chat_resp = admin.table('chat_rooms').select('id').eq('trip_id', trip_id).eq('is_group', True).limit(1).execute()
+                    chat_room = (getattr(chat_resp, 'data', None) or [None])[0]
+                    
+                    if chat_room:
+                        # Obtener miembros del chat
+                        members_resp = admin.table('chat_members').select('user_id, role').eq('room_id', chat_room.get('id')).execute()
+                        members = getattr(members_resp, 'data', []) or []
+                    else:
+                        members = []
+                    
+                    # Verificar qué miembros ya están en el historial
+                    existing_history_resp = admin.table('trip_history').select('user_id').eq('trip_id', trip_id).execute()
+                    existing_user_ids = set([entry.get('user_id') for entry in (getattr(existing_history_resp, 'data', []) or [])])
+                    
+                    history_entries = []
+                    for member in members:
+                        user_id = member.get('user_id')
+                        
+                        # Solo agregar si no está ya en el historial
+                        if user_id not in existing_user_ids:
+                            # Mapear role de chat_members a trip_history
+                            member_role = member.get('role')
+                            if member_role == 'owner':
+                                history_role = 'organizer'
+                            else:
+                                history_role = 'member'
+                                
+                            history_entry = {
+                                'user_id': user_id,
+                                'trip_id': trip_id,
+                                'role': history_role,
+                                'status': 'completed',
+                                'joined_at': final_start,
+                                'left_at': None,
+                                'rating_given': None,
+                                'review_text': None
+                            }
+                            history_entries.append(history_entry)
+                    
+                    if history_entries:
+                        admin.table('trip_history').insert(history_entries).execute()
+                
+                return Response({
+                    'ok': True,
+                    'message': 'Fechas actualizadas exitosamente',
+                    'new_status': update_data.get('status'),
+                    'history_entries_added': len(history_entries) if update_data.get('status') == 'completed' else 0
+                })
+            else:
+                return Response({'ok': False, 'error': 'No se proporcionaron fechas para actualizar'}, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AddMissingTripHistoryView(APIView):
+    """Endpoint para agregar miembros faltantes al historial de un viaje completado"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            payload = request.data or {}
+            trip_id = payload.get('trip_id')
+            
+            if not trip_id:
+                return Response({'ok': False, 'error': 'trip_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Buscar el chat GRUPAL del viaje (no los chats privados)
+            chat_resp = admin.table('chat_rooms').select('id').eq('trip_id', trip_id).eq('is_group', True).limit(1).execute()
+            chat_room = (getattr(chat_resp, 'data', None) or [None])[0]
+            
+            if not chat_room:
+                return Response({'ok': False, 'error': 'Chat del viaje no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+            
+            # Obtener miembros del chat
+            members_resp = admin.table('chat_members').select('user_id, role').eq('room_id', chat_room.get('id')).execute()
+            members = getattr(members_resp, 'data', []) or []
+            
+            # Obtener miembros que ya están en el historial
+            existing_history_resp = admin.table('trip_history').select('user_id').eq('trip_id', trip_id).execute()
+            existing_user_ids = set([entry.get('user_id') for entry in (getattr(existing_history_resp, 'data', []) or [])])
+            
+            print(f"DEBUG: Members in chat: {[m.get('user_id') for m in members]}")
+            print(f"DEBUG: Existing in history: {existing_user_ids}")
+            
+            # Agregar solo los miembros faltantes
+            history_entries = []
+            for member in members:
+                user_id = member.get('user_id')
+                
+                # Agregar solo miembros que no estén ya en el historial
+                if user_id not in existing_user_ids:
+                    # Mapear role de chat_members a trip_history
+                    member_role = member.get('role')
+                    if member_role == 'owner':
+                        history_role = 'organizer'
+                    else:
+                        history_role = 'member'
+                        
+                    history_entry = {
+                        'user_id': user_id,
+                        'trip_id': trip_id,
+                        'role': history_role,
+                        'status': 'completed',
+                        'joined_at': '2024-01-15',  # Fecha del viaje
+                        'left_at': None,
+                        'rating_given': None,
+                        'review_text': None
+                    }
+                    history_entries.append(history_entry)
+            
+            if history_entries:
+                admin.table('trip_history').insert(history_entries).execute()
+                return Response({
+                    'ok': True,
+                    'message': f'Agregados {len(history_entries)} miembros al historial',
+                    'added_members': len(history_entries)
+                })
+            else:
+                return Response({
+                    'ok': True,
+                    'message': 'Todos los miembros ya están en el historial',
+                    'added_members': 0
+                })
+                
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
