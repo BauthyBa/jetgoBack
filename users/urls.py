@@ -18,6 +18,7 @@ from .views import (
     ApplicationRespondSupabaseView,
     ChatMembersView,
     DebugChatMembersView,
+    TestEndpointView,
     TripHistoryView,
     CompleteTripView,
     RateTripView,
@@ -52,6 +53,7 @@ urlpatterns = [
     path('trips/members/', ListTripMembersView.as_view(), name='trip_members'),
     path('trips/leave/', LeaveTripView.as_view(), name='trip_leave'),
     path('debug/chat-members/', DebugChatMembersView.as_view(), name='debug_chat_members'),
+    path('test/', TestEndpointView.as_view(), name='test_endpoint'),
     path('chat-members/', ChatMembersView.as_view(), name='chat_members'),
     # Trip history
     path('trip-history/', TripHistoryView.as_view(), name='trip_history'),

@@ -609,29 +609,38 @@ class ChatMembersView(APIView):
 
     def get(self, request, *args, **kwargs):
         try:
+            print(f"🔍 ChatMembersView: Received request with room_id={request.query_params.get('room_id')}")
+            
             admin = get_supabase_admin()
             room_id = request.query_params.get('room_id')
             
             if not room_id:
+                print("❌ ChatMembersView: No room_id provided")
                 return Response({'ok': False, 'error': 'room_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            print(f"🔍 ChatMembersView: Querying chat_members for room_id={room_id}")
             
             # Get chat members for this room using admin (bypasses RLS)
             members_resp = admin.table('chat_members').select('*').eq('room_id', room_id).execute()
             members = getattr(members_resp, 'data', []) or []
+            
+            print(f"🔍 ChatMembersView: Found {len(members)} members")
             
             # Get user names for the members
             user_ids = [m.get('user_id') for m in members if m.get('user_id')]
             name_map = {}
             if user_ids:
                 try:
+                    print(f"🔍 ChatMembersView: Fetching names for user_ids={user_ids}")
                     users_resp = admin.table('User').select('userid,nombre,apellido').in_('userid', user_ids).execute()
                     users = getattr(users_resp, 'data', []) or []
                     for user in users:
                         full_name = f"{user.get('nombre', '')} {user.get('apellido', '')}".strip()
                         if full_name:
                             name_map[user.get('userid')] = full_name
+                    print(f"🔍 ChatMembersView: Name map={name_map}")
                 except Exception as e:
-                    print(f"Error fetching user names: {e}")
+                    print(f"❌ ChatMembersView: Error fetching user names: {e}")
             
             # Enrich members with names
             enriched_members = []
@@ -644,9 +653,35 @@ class ChatMembersView(APIView):
                     'name': name
                 })
             
+            print(f"🔍 ChatMembersView: Returning {len(enriched_members)} enriched members")
             return Response({'ok': True, 'members': enriched_members, 'count': len(enriched_members)})
         except Exception as e:
+            print(f"❌ ChatMembersView: Exception occurred: {str(e)}")
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TestEndpointView(APIView):
+    """Endpoint de prueba para diagnosticar problemas de conectividad"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        print("🔍 TestEndpointView: Received GET request")
+        return Response({
+            'ok': True, 
+            'message': 'Test endpoint working',
+            'timestamp': str(datetime.now()),
+            'headers': dict(request.headers)
+        })
+
+    def post(self, request, *args, **kwargs):
+        print("🔍 TestEndpointView: Received POST request")
+        return Response({
+            'ok': True, 
+            'message': 'Test endpoint working',
+            'data': request.data,
+            'timestamp': str(datetime.now())
+        })
 
 
 class DebugChatMembersView(APIView):
