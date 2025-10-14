@@ -155,10 +155,14 @@ class ApplicationCreateView(generics.CreateAPIView):
 class ApplicationListView(generics.ListAPIView):
     """Listar aplicaciones del usuario"""
     serializer_class = ApplicationSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]  # Cambiar a AllowAny temporalmente
     
     def get_queryset(self):
-        return Application.objects.filter(applicant=self.request.user).order_by('-created_at')
+        # Obtener user_id de los parámetros de consulta
+        user_id = self.request.query_params.get('user_id')
+        if user_id:
+            return Application.objects.filter(applicant_id=user_id).order_by('-created_at')
+        return Application.objects.none()
 
 
 class TripApplicationsListView(generics.ListAPIView):

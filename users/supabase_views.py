@@ -251,7 +251,7 @@ class SupabaseGetUserNotificationsView(APIView):
                 notifications = getattr(notifications_resp, 'data', []) or []
 
                 # Contar notificaciones no leídas
-                unread_resp = admin.table('notifications').select('id', count='exact').eq('user_id', user_id).eq('read', False).execute()
+                unread_resp = admin.table('notifications').select('id', count='exact').eq('user_id', user_id).eq('is_read', False).execute()
                 unread_count = getattr(unread_resp, 'count', 0) or 0
 
                 return Response({

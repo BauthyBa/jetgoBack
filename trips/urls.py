@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views, chat_views, trip_reviews_views
+from . import views, chat_views, trip_reviews_views, expenses_views
 
 urlpatterns = [
     # Viajes
@@ -17,6 +17,8 @@ urlpatterns = [
     path('applications/<int:application_id>/respond/', views.respond_to_application, name='respond-application'),
     
     # Chat
+    path('chat/test/', chat_views.test_endpoint, name='test-endpoint'),
+    path('chat/test-audio/', chat_views.test_audio_upload, name='test-audio-upload'),
     path('chat/upload-file/', chat_views.upload_chat_file, name='upload-chat-file'),
     path('chat/send-message/', chat_views.send_chat_message, name='send-chat-message'),
     path('chat/rooms/<str:room_id>/messages/', chat_views.get_chat_messages, name='get-chat-messages'),
@@ -33,4 +35,13 @@ urlpatterns = [
     path('trip-reviews/<str:review_id>/delete/', trip_reviews_views.TripReviewDeleteView.as_view(), name='trip-review-delete'),
     path('trip-reviews/<str:review_id>/response/', trip_reviews_views.TripReviewResponseView.as_view(), name='trip-review-response'),
     path('trip-reviews/categories/', trip_reviews_views.TripReviewCategoriesView.as_view(), name='trip-review-categories'),
+    
+    # Gastos de Viajes
+    path('trip-expenses/', expenses_views.TripExpenseCreateView.as_view(), name='trip-expense-create'),
+    path('trip-expenses/list/', expenses_views.TripExpenseListView.as_view(), name='trip-expense-list'),
+    path('trip-expenses/summary/', expenses_views.TripExpenseSummaryView.as_view(), name='trip-expense-summary'),
+    path('trip-expenses/<str:expense_id>/', expenses_views.TripExpenseDetailView.as_view(), name='trip-expense-detail'),
+    path('trip-expenses/<str:expense_id>/update/', expenses_views.TripExpenseUpdateView.as_view(), name='trip-expense-update'),
+    path('trip-expenses/<str:expense_id>/delete/', expenses_views.TripExpenseDeleteView.as_view(), name='trip-expense-delete'),
+    path('trip-expenses/categories/', expenses_views.TripExpenseCategoriesView.as_view(), name='trip-expense-categories'),
 ]
