@@ -1234,6 +1234,32 @@ class ApplicationCreateSupabaseView(APIView):
             except Exception:
                 pass
 
+            # Crear notificación para el organizador
+            try:
+                # Obtener nombre del solicitante
+                applicant_resp = admin.table('User').select('nombre, apellido').eq('userid', str(applicant_id)).limit(1).execute()
+                applicant = (getattr(applicant_resp, 'data', None) or [None])[0]
+                applicant_name = f"{applicant.get('nombre', '')} {applicant.get('apellido', '')}".strip() if applicant else 'Un usuario'
+                
+                # Crear notificación para el organizador
+                notification_data = {
+                    'user_id': organizer_id,
+                    'type': 'trip_application',
+                    'title': 'Nueva solicitud de viaje',
+                    'message': f'{applicant_name} quiere unirse a tu viaje "{trip.get("name", "Sin nombre")}"',
+                    'data': {
+                        'trip_id': trip_id,
+                        'applicant_id': str(applicant_id),
+                        'application_id': application.get('id'),
+                        'room_id': room.get('id') if room else None
+                    }
+                }
+                
+                admin.table('notifications').insert(notification_data).execute()
+            except Exception as notification_error:
+                # No fallar si la notificación no se puede crear
+                print(f"Error creando notificación: {notification_error}")
+
             return Response({'ok': True, 'application': application, 'room_id': room.get('id') if room else None})
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1320,6 +1346,43 @@ class ApplicationRespondSupabaseView(APIView):
                         }).execute()
             except Exception:
                 pass
+
+            # Crear notificación para el solicitante
+            try:
+                # Obtener nombre del organizador
+                organizer_resp = admin.table('User').select('nombre, apellido').eq('userid', expected_org).limit(1).execute()
+                organizer = (getattr(organizer_resp, 'data', None) or [None])[0]
+                organizer_name = f"{organizer.get('nombre', '')} {organizer.get('apellido', '')}".strip() if organizer else 'El organizador'
+                
+                if action == 'accept':
+                    notification_data = {
+                        'user_id': str(applicant_id),
+                        'type': 'trip_application_accepted',
+                        'title': '¡Solicitud aceptada!',
+                        'message': f'{organizer_name} aceptó tu solicitud para el viaje "{trip.get("name", "Sin nombre")}"',
+                        'data': {
+                            'trip_id': trip_id,
+                            'organizer_id': expected_org,
+                            'application_id': app_id
+                        }
+                    }
+                else:
+                    notification_data = {
+                        'user_id': str(applicant_id),
+                        'type': 'trip_application_rejected',
+                        'title': 'Solicitud rechazada',
+                        'message': f'{organizer_name} rechazó tu solicitud para el viaje "{trip.get("name", "Sin nombre")}"',
+                        'data': {
+                            'trip_id': trip_id,
+                            'organizer_id': expected_org,
+                            'application_id': app_id
+                        }
+                    }
+                
+                admin.table('notifications').insert(notification_data).execute()
+            except Exception as notification_error:
+                # No fallar si la notificación no se puede crear
+                print(f"Error creando notificación: {notification_error}")
 
             if action == 'reject':
                 return Response({'ok': True, 'status': 'rejected'})
@@ -1829,3 +1892,162 @@ class AddMissingTripHistoryView(APIView):
                 
         except Exception as e:
             return Response({'ok': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CreateNotificationView(APIView):
+    """Endpoint para crear notificaciones automáticamente"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            user_id = request.data.get('user_id')
+            notification_type = request.data.get('type')
+            title = request.data.get('title')
+            message = request.data.get('message')
+            data = request.data.get('data', {})
+            
+            if not all([user_id, notification_type, title, message]):
+                return Response({
+                    'ok': False,
+                    'error': 'user_id, type, title y message son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            admin = get_supabase_admin()
+            
+            # Crear la notificación
+            notification_data = {
+                'user_id': user_id,
+                'type': notification_type,
+                'title': title,
+                'message': message,
+                'data': data,
+                'read': False,
+                'created_at': 'now()'
+            }
+            
+            print(f"🔔 Creando notificación: {notification_data}")
+            insert_resp = admin.table('notifications').insert(notification_data).execute()
+            notification = (getattr(insert_resp, 'data', None) or [None])[0]
+            
+            if notification:
+                print(f"🔔 Notificación creada exitosamente: {notification}")
+                return Response({
+                    'ok': True,
+                    'notification': notification,
+                    'message': 'Notificación creada exitosamente'
+                })
+            else:
+                print(f"🔔 Error: No se pudo crear la notificación")
+                return Response({
+                    'ok': False,
+                    'error': 'Error creando la notificación'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            print(f"🔔 Error creando notificación: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class TestNotificationView(APIView):
+    """Endpoint de prueba para crear notificaciones de chat"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            user_id = request.data.get('user_id')
+            room_id = request.data.get('room_id')
+            content = request.data.get('content', 'Mensaje de prueba')
+            
+            if not user_id or not room_id:
+                return Response({
+                    'ok': False,
+                    'error': 'user_id y room_id son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            admin = get_supabase_admin()
+            
+            # Simular la lógica de notificaciones de chat
+            try:
+                # Obtener información de la sala
+                room_resp = admin.table('chat_rooms').select('*').eq('id', room_id).limit(1).execute()
+                room = (getattr(room_resp, 'data', None) or [None])[0]
+                
+                if not room:
+                    return Response({
+                        'ok': False,
+                        'error': 'Sala no encontrada'
+                    }, status=status.HTTP_404_NOT_FOUND)
+                
+                # Obtener todos los miembros de la sala excepto el remitente
+                members_resp = admin.table('chat_members').select('user_id').eq('room_id', room_id).neq('user_id', str(user_id)).execute()
+                members = getattr(members_resp, 'data', []) or []
+                
+                print(f"🔔 Miembros encontrados: {members}")
+                
+                # Obtener nombre del remitente
+                sender_resp = admin.table('User').select('nombre, apellido').eq('userid', str(user_id)).limit(1).execute()
+                sender = (getattr(sender_resp, 'data', None) or [None])[0]
+                sender_name = f"{sender.get('nombre', '')} {sender.get('apellido', '')}".strip() if sender else 'Un usuario'
+                
+                # Determinar el tipo de notificación
+                room_name = room.get('name', 'Chat')
+                is_group = room.get('is_group', False)
+                
+                if is_group:
+                    notification_type = 'group_chat_message'
+                    title = f'Nuevo mensaje en {room_name}'
+                    message = f'{sender_name} envió un mensaje en el chat grupal'
+                else:
+                    notification_type = 'private_chat_message'
+                    title = f'Mensaje de {sender_name}'
+                    message = f'{sender_name} te envió un mensaje privado'
+                
+                # Crear notificaciones para cada miembro
+                created_notifications = []
+                for member in members:
+                    member_id = member.get('user_id')
+                    if member_id:
+                        notification_data = {
+                            'user_id': member_id,
+                            'type': notification_type,
+                            'title': title,
+                            'message': message,
+                            'data': {
+                                'room_id': room_id,
+                                'sender_id': str(user_id),
+                                'sender_name': sender_name,
+                                'message_content': content[:100] + '...' if len(content) > 100 else content,
+                                'is_file': False
+                            }
+                        }
+                        
+                        print(f"🔔 Creando notificación para {member_id}: {notification_data}")
+                        insert_resp = admin.table('notifications').insert(notification_data).execute()
+                        notification = (getattr(insert_resp, 'data', None) or [None])[0]
+                        if notification:
+                            created_notifications.append(notification)
+                
+                return Response({
+                    'ok': True,
+                    'notifications_created': len(created_notifications),
+                    'notifications': created_notifications
+                })
+                
+            except Exception as e:
+                print(f"🔔 Error en lógica de notificaciones: {str(e)}")
+                return Response({
+                    'ok': False,
+                    'error': f'Error en lógica de notificaciones: {str(e)}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            print(f"🔔 Error general: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
