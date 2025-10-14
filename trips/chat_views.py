@@ -326,6 +326,79 @@ def send_chat_message(request):
         if not response.data:
             return Response({'error': 'Error enviando mensaje'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
+        # Crear notificaciones para otros miembros del chat
+        try:
+            print(f"🔔 Iniciando creación de notificaciones para room_id: {room_id}")
+            
+            # Obtener información de la sala
+            room_resp = admin.table('chat_rooms').select('*').eq('id', room_id).limit(1).execute()
+            room = (getattr(room_resp, 'data', None) or [None])[0]
+            
+            print(f"🔔 Sala encontrada: {room}")
+            
+            if room:
+                # Obtener todos los miembros de la sala excepto el remitente
+                members_resp = admin.table('chat_members').select('user_id').eq('room_id', room_id).neq('user_id', str(user_id)).execute()
+                members = getattr(members_resp, 'data', []) or []
+                
+                print(f"🔔 Miembros encontrados: {members}")
+                
+                # Obtener nombre del remitente
+                sender_resp = admin.table('User').select('nombre, apellido').eq('userid', str(user_id)).limit(1).execute()
+                sender = (getattr(sender_resp, 'data', None) or [None])[0]
+                sender_name = f"{sender.get('nombre', '')} {sender.get('apellido', '')}".strip() if sender else 'Un usuario'
+                
+                print(f"🔔 Nombre del remitente: {sender_name}")
+                
+                # Determinar el tipo de notificación
+                room_name = room.get('name', 'Chat')
+                is_group = room.get('is_group', False)
+                
+                if is_group:
+                    notification_type = 'group_chat_message'
+                    title = f'Nuevo mensaje en {room_name}'
+                    message = f'{sender_name} envió un mensaje en el chat grupal'
+                else:
+                    notification_type = 'private_chat_message'
+                    title = f'Mensaje de {sender_name}'
+                    message = f'{sender_name} te envió un mensaje privado'
+                
+                print(f"🔔 Tipo de notificación: {notification_type}")
+                
+                # Crear notificaciones para cada miembro
+                created_count = 0
+                for member in members:
+                    member_id = member.get('user_id')
+                    if member_id:
+                        notification_data = {
+                            'user_id': member_id,
+                            'type': notification_type,
+                            'title': title,
+                            'message': message,
+                            'data': {
+                                'room_id': room_id,
+                                'sender_id': str(user_id),
+                                'sender_name': sender_name,
+                                'message_content': content[:100] + '...' if len(content) > 100 else content,
+                                'is_file': bool(file_data)
+                            }
+                        }
+                        
+                        print(f"🔔 Creando notificación para {member_id}: {notification_data}")
+                        insert_resp = admin.table('notifications').insert(notification_data).execute()
+                        notification = (getattr(insert_resp, 'data', None) or [None])[0]
+                        if notification:
+                            created_count += 1
+                            print(f"🔔 Notificación creada exitosamente: {notification['id']}")
+                
+                print(f"🔔 Total de notificaciones creadas: {created_count}")
+            else:
+                print(f"🔔 No se encontró la sala con ID: {room_id}")
+        except Exception as notification_error:
+            # No fallar si las notificaciones no se pueden crear
+            print(f"🔔 Error creando notificaciones de chat: {notification_error}")
+            logger.error(f"Error creando notificaciones de chat: {notification_error}")
+        
         return Response({
             'message': 'Mensaje enviado',
             'message_id': response.data[0]['id']

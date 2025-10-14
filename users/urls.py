@@ -25,6 +25,8 @@ from .views import (
     AutoCompleteTripsView,
     UpdateTripDatesView,
     AddMissingTripHistoryView,
+    CreateNotificationView,
+    TestNotificationView,
 )
 from .supabase_views import (
     SupabaseCreateReviewView,
@@ -62,6 +64,9 @@ urlpatterns = [
     path('trips/auto-complete/', AutoCompleteTripsView.as_view(), name='trip_auto_complete'),
     path('trips/update-dates/', UpdateTripDatesView.as_view(), name='trip_update_dates'),
     path('trips/add-missing-history/', AddMissingTripHistoryView.as_view(), name='trip_add_missing_history'),
+    # Notifications
+    path('notifications/create/', CreateNotificationView.as_view(), name='create_notification'),
+    path('notifications/test/', TestNotificationView.as_view(), name='test_notification'),
     # Applications (Supabase-backed)
     path('applications/', ApplicationCreateSupabaseView.as_view(), name='applications_create'),
     path('applications/respond/', ApplicationRespondSupabaseView.as_view(), name='applications_respond'),
