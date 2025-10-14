@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views, chat_views
+from . import views, chat_views, trip_reviews_views
 
 urlpatterns = [
     # Viajes
@@ -23,4 +23,14 @@ urlpatterns = [
     path('chat/rooms/', chat_views.get_user_chat_rooms, name='get-user-chat-rooms'),
     path('chat/messages/<str:message_id>/delete-file/', chat_views.delete_chat_file, name='delete-chat-file'),
     path('chat/rooms/<str:room_id>/file-stats/', chat_views.get_room_file_stats, name='get-room-file-stats'),
+    
+    # Reseñas de Viajes
+    path('trip-reviews/', trip_reviews_views.TripReviewCreateView.as_view(), name='trip-review-create'),
+    path('trip-reviews/list/', trip_reviews_views.TripReviewListView.as_view(), name='trip-review-list'),
+    path('trip-reviews/eligibility/', trip_reviews_views.TripReviewEligibilityView.as_view(), name='trip-review-eligibility'),
+    path('trip-reviews/<str:review_id>/', trip_reviews_views.TripReviewDetailView.as_view(), name='trip-review-detail'),
+    path('trip-reviews/<str:review_id>/update/', trip_reviews_views.TripReviewUpdateView.as_view(), name='trip-review-update'),
+    path('trip-reviews/<str:review_id>/delete/', trip_reviews_views.TripReviewDeleteView.as_view(), name='trip-review-delete'),
+    path('trip-reviews/<str:review_id>/response/', trip_reviews_views.TripReviewResponseView.as_view(), name='trip-review-response'),
+    path('trip-reviews/categories/', trip_reviews_views.TripReviewCategoriesView.as_view(), name='trip-review-categories'),
 ]
