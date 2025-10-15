@@ -27,6 +27,14 @@ from .views import (
     AddMissingTripHistoryView,
     CreateNotificationView,
     TestNotificationView,
+    # Friend requests
+    SendFriendRequestView,
+    RespondFriendRequestView,
+    GetFriendRequestsView,
+    GetFriendsView,
+    CheckFriendshipStatusView,
+    DebugFriendRequestsView,
+    InviteFriendToTripView,
 )
 from .supabase_views import (
     SupabaseCreateReviewView,
@@ -88,5 +96,14 @@ urlpatterns = [
     path('reports/user/', GetUserReportsView.as_view(), name='get_user_reports'),
     path('reports/suspension/', CheckUserSuspensionView.as_view(), name='check_user_suspension'),
     path('reports/reasons/', GetReportReasonsView.as_view(), name='get_report_reasons'),
+    
+    # URLs para solicitudes de amistad
+    path('friends/send-request/', SendFriendRequestView.as_view(), name='send_friend_request'),
+    path('friends/respond-request/', RespondFriendRequestView.as_view(), name='respond_friend_request'),
+    path('friends/requests/', GetFriendRequestsView.as_view(), name='get_friend_requests'),
+    path('friends/list/', GetFriendsView.as_view(), name='get_friends'),
+    path('friends/check-status/', CheckFriendshipStatusView.as_view(), name='check_friendship_status'),
+    path('friends/debug/', DebugFriendRequestsView.as_view(), name='debug_friend_requests'),
+    path('friends/invite-to-trip/', InviteFriendToTripView.as_view(), name='invite_friend_to_trip'),
 ]
 

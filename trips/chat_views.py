@@ -251,11 +251,12 @@ def upload_chat_file(request):
         logger.info(f"file_name: {message_data.get('file_name')}")
         logger.info(f"file_type: {message_data.get('file_type')}")
         logger.info(f"is_file: {message_data.get('is_file')}")
-        logger.info(f"All required fields present: {all([
+        required_fields = [
             message_data.get('file_url'),
             message_data.get('file_name'),
             message_data.get('file_type')
-        ])}")
+        ]
+        logger.info(f"All required fields present: {all(required_fields)}")
         
         # Insertar mensaje en la base de datos
         response = admin.table('chat_messages').insert(message_data).execute()

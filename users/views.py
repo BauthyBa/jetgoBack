@@ -2051,3 +2051,563 @@ class TestNotificationView(APIView):
                 'ok': False,
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ============================================
+# ENDPOINTS PARA SOLICITUDES DE AMISTAD
+# ============================================
+
+class SendFriendRequestView(APIView):
+    """Enviar solicitud de amistad"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            sender_id = request.data.get('sender_id')
+            receiver_id = request.data.get('receiver_id')
+            
+            if not sender_id or not receiver_id:
+                return Response({
+                    'ok': False,
+                    'error': 'sender_id y receiver_id son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Validar que los IDs sean UUIDs válidos
+            import uuid
+            try:
+                uuid.UUID(sender_id)
+                uuid.UUID(receiver_id)
+            except ValueError:
+                return Response({
+                    'ok': False,
+                    'error': 'sender_id y receiver_id deben ser UUIDs válidos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if sender_id == receiver_id:
+                return Response({
+                    'ok': False,
+                    'error': 'No puedes enviarte una solicitud a ti mismo'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            admin = get_supabase_admin()
+            
+            # Verificar si ya existe una solicitud entre estos usuarios
+            # Primero buscar como sender
+            existing_resp1 = admin.table('friend_requests').select('*').eq('sender_id', sender_id).eq('receiver_id', receiver_id).execute()
+            # Luego buscar como receiver
+            existing_resp2 = admin.table('friend_requests').select('*').eq('sender_id', receiver_id).eq('receiver_id', sender_id).execute()
+            
+            existing_requests = []
+            if existing_resp1.data:
+                existing_requests.extend(existing_resp1.data)
+            if existing_resp2.data:
+                existing_requests.extend(existing_resp2.data)
+            
+            if existing_requests:
+                existing = existing_requests[0]
+                if existing['status'] == 'pending':
+                    return Response({
+                        'ok': False,
+                        'error': 'Ya existe una solicitud pendiente entre estos usuarios'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                elif existing['status'] == 'accepted':
+                    return Response({
+                        'ok': False,
+                        'error': 'Ya son amigos'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Crear nueva solicitud
+            friend_request_data = {
+                'sender_id': sender_id,
+                'receiver_id': receiver_id,
+                'status': 'pending',
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            insert_resp = admin.table('friend_requests').insert(friend_request_data).execute()
+            friend_request = (getattr(insert_resp, 'data', None) or [None])[0]
+            
+            if not friend_request:
+                return Response({
+                    'ok': False,
+                    'error': 'Error creando la solicitud'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # Crear notificación para el receptor
+            try:
+                # Obtener nombre del remitente
+                sender_resp = admin.table('User').select('nombre, apellido').eq('userid', sender_id).limit(1).execute()
+                sender = (getattr(sender_resp, 'data', None) or [None])[0]
+                sender_name = f"{sender.get('nombre', '')} {sender.get('apellido', '')}".strip() if sender else 'Un usuario'
+                
+                notification_data = {
+                    'user_id': receiver_id,
+                    'type': 'friend_request',
+                    'title': 'Nueva solicitud de amistad',
+                    'message': f'{sender_name} te envió una solicitud de amistad',
+                    'data': {
+                        'sender_id': sender_id,
+                        'sender_name': sender_name,
+                        'request_id': friend_request['id']
+                    }
+                }
+                
+                admin.table('notifications').insert(notification_data).execute()
+            except Exception as notification_error:
+                print(f"Error creando notificación de solicitud: {notification_error}")
+            
+            return Response({
+                'ok': True,
+                'friend_request': friend_request,
+                'message': 'Solicitud enviada exitosamente'
+            })
+            
+        except Exception as e:
+            print(f"Error enviando solicitud de amistad: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RespondFriendRequestView(APIView):
+    """Responder a una solicitud de amistad (aceptar/rechazar)"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            request_id = request.data.get('request_id')
+            action = request.data.get('action')  # 'accept' o 'reject'
+            user_id = request.data.get('user_id')  # ID del usuario que responde
+            
+            if not all([request_id, action, user_id]):
+                return Response({
+                    'ok': False,
+                    'error': 'request_id, action y user_id son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if action not in ['accept', 'reject']:
+                return Response({
+                    'ok': False,
+                    'error': 'action debe ser "accept" o "reject"'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            admin = get_supabase_admin()
+            
+            # Obtener la solicitud
+            request_resp = admin.table('friend_requests').select('*').eq('id', request_id).limit(1).execute()
+            friend_request = (getattr(request_resp, 'data', None) or [None])[0]
+            
+            if not friend_request:
+                return Response({
+                    'ok': False,
+                    'error': 'Solicitud no encontrada'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Verificar que el usuario es el receptor
+            if friend_request['receiver_id'] != user_id:
+                return Response({
+                    'ok': False,
+                    'error': 'No tienes permisos para responder a esta solicitud'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Verificar que la solicitud está pendiente
+            if friend_request['status'] != 'pending':
+                return Response({
+                    'ok': False,
+                    'error': 'Esta solicitud ya fue respondida'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Actualizar el estado
+            new_status = 'accepted' if action == 'accept' else 'rejected'
+            update_data = {
+                'status': new_status,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            update_resp = admin.table('friend_requests').update(update_data).eq('id', request_id).execute()
+            updated_request = (getattr(update_resp, 'data', None) or [None])[0]
+            
+            if not updated_request:
+                return Response({
+                    'ok': False,
+                    'error': 'Error actualizando la solicitud'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # Crear notificación para el remitente
+            try:
+                # Obtener nombre del receptor
+                receiver_resp = admin.table('User').select('nombre, apellido').eq('userid', user_id).limit(1).execute()
+                receiver = (getattr(receiver_resp, 'data', None) or [None])[0]
+                receiver_name = f"{receiver.get('nombre', '')} {receiver.get('apellido', '')}".strip() if receiver else 'Un usuario'
+                
+                if action == 'accept':
+                    notification_data = {
+                        'user_id': friend_request['sender_id'],
+                        'type': 'friend_request_accepted',
+                        'title': 'Solicitud de amistad aceptada',
+                        'message': f'{receiver_name} aceptó tu solicitud de amistad',
+                        'data': {
+                            'receiver_id': user_id,
+                            'receiver_name': receiver_name,
+                            'request_id': request_id
+                        }
+                    }
+                else:
+                    notification_data = {
+                        'user_id': friend_request['sender_id'],
+                        'type': 'friend_request_rejected',
+                        'title': 'Solicitud de amistad rechazada',
+                        'message': f'{receiver_name} rechazó tu solicitud de amistad',
+                        'data': {
+                            'receiver_id': user_id,
+                            'receiver_name': receiver_name,
+                            'request_id': request_id
+                        }
+                    }
+                
+                admin.table('notifications').insert(notification_data).execute()
+            except Exception as notification_error:
+                print(f"Error creando notificación de respuesta: {notification_error}")
+            
+            return Response({
+                'ok': True,
+                'friend_request': updated_request,
+                'message': f'Solicitud {new_status} exitosamente'
+            })
+            
+        except Exception as e:
+            print(f"Error respondiendo solicitud de amistad: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class GetFriendRequestsView(APIView):
+    """Obtener solicitudes de amistad de un usuario"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            user_id = request.query_params.get('user_id')
+            request_type = request.query_params.get('type', 'received')  # 'sent' o 'received'
+            
+            print(f"🔍 GetFriendRequestsView - user_id recibido: {user_id}")
+            print(f"🔍 GetFriendRequestsView - request_type: {request_type}")
+            print(f"🔍 GetFriendRequestsView - query_params completos: {request.query_params}")
+            
+            if not user_id:
+                return Response({
+                    'ok': False,
+                    'error': 'user_id es requerido'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            admin = get_supabase_admin()
+            
+            if request_type == 'sent':
+                # Solicitudes enviadas
+                requests_resp = admin.table('friend_requests').select('*').eq('sender_id', user_id).order('created_at', desc=True).execute()
+            else:
+                # Solicitudes recibidas
+                requests_resp = admin.table('friend_requests').select('*').eq('receiver_id', user_id).order('created_at', desc=True).execute()
+            
+            friend_requests = getattr(requests_resp, 'data', []) or []
+            
+            # Enriquecer con información del usuario
+            enriched_requests = []
+            for req in friend_requests:
+                other_user_id = req['receiver_id'] if request_type == 'sent' else req['sender_id']
+                
+                # Obtener información del otro usuario
+                user_resp = admin.table('User').select('nombre, apellido, userid').eq('userid', other_user_id).limit(1).execute()
+                other_user = (getattr(user_resp, 'data', None) or [None])[0]
+                
+                enriched_request = {
+                    **req,
+                    'other_user': {
+                        'id': other_user_id,
+                        'nombre': other_user.get('nombre', '') if other_user else '',
+                        'apellido': other_user.get('apellido', '') if other_user else '',
+                        'full_name': f"{other_user.get('nombre', '')} {other_user.get('apellido', '')}".strip() if other_user else 'Usuario'
+                    }
+                }
+                enriched_requests.append(enriched_request)
+            
+            return Response({
+                'ok': True,
+                'friend_requests': enriched_requests
+            })
+            
+        except Exception as e:
+            print(f"Error obteniendo solicitudes de amistad: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class GetFriendsView(APIView):
+    """Obtener lista de amigos de un usuario"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            user_id = request.query_params.get('user_id')
+            
+            if not user_id:
+                return Response({
+                    'ok': False,
+                    'error': 'user_id es requerido'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            admin = get_supabase_admin()
+            
+            # Obtener solicitudes aceptadas donde el usuario es remitente o receptor
+            # Buscar como sender
+            requests_resp1 = admin.table('friend_requests').select('*').eq('sender_id', user_id).eq('status', 'accepted').execute()
+            # Buscar como receiver
+            requests_resp2 = admin.table('friend_requests').select('*').eq('receiver_id', user_id).eq('status', 'accepted').execute()
+            
+            friend_requests = []
+            if requests_resp1.data:
+                friend_requests.extend(requests_resp1.data)
+            if requests_resp2.data:
+                friend_requests.extend(requests_resp2.data)
+            
+            # Enriquecer con información de los amigos
+            friends = []
+            for req in friend_requests:
+                friend_id = req['receiver_id'] if req['sender_id'] == user_id else req['sender_id']
+                
+                # Obtener información del amigo
+                friend_resp = admin.table('User').select('nombre, apellido, userid').eq('userid', friend_id).limit(1).execute()
+                friend = (getattr(friend_resp, 'data', None) or [None])[0]
+                
+                if friend:
+                    friends.append({
+                        'id': friend_id,
+                        'nombre': friend.get('nombre', ''),
+                        'apellido': friend.get('apellido', ''),
+                        'full_name': f"{friend.get('nombre', '')} {friend.get('apellido', '')}".strip(),
+                        'friendship_date': req['created_at']
+                    })
+            
+            return Response({
+                'ok': True,
+                'friends': friends
+            })
+            
+        except Exception as e:
+            print(f"Error obteniendo amigos: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CheckFriendshipStatusView(APIView):
+    """Verificar el estado de amistad entre dos usuarios"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            user1_id = request.query_params.get('user1_id')
+            user2_id = request.query_params.get('user2_id')
+            
+            if not user1_id or not user2_id:
+                return Response({
+                    'ok': False,
+                    'error': 'user1_id y user2_id son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            admin = get_supabase_admin()
+            
+            # Buscar solicitud entre estos usuarios
+            # Buscar como sender
+            request_resp1 = admin.table('friend_requests').select('*').eq('sender_id', user1_id).eq('receiver_id', user2_id).limit(1).execute()
+            # Buscar como receiver
+            request_resp2 = admin.table('friend_requests').select('*').eq('sender_id', user2_id).eq('receiver_id', user1_id).limit(1).execute()
+            
+            friend_request = None
+            if request_resp1.data and len(request_resp1.data) > 0:
+                friend_request = request_resp1.data[0]
+            elif request_resp2.data and len(request_resp2.data) > 0:
+                friend_request = request_resp2.data[0]
+            
+            if not friend_request:
+                return Response({
+                    'ok': True,
+                    'status': 'none',
+                    'message': 'No hay relación de amistad'
+                })
+            
+            status_map = {
+                'pending': 'pending',
+                'accepted': 'friends',
+                'rejected': 'rejected'
+            }
+            
+            return Response({
+                'ok': True,
+                'status': status_map.get(friend_request['status'], 'none'),
+                'friend_request': friend_request
+            })
+            
+        except Exception as e:
+            print(f"Error verificando estado de amistad: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class DebugFriendRequestsView(APIView):
+    """Debug: Ver todas las solicitudes de amistad"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        try:
+            admin = get_supabase_admin()
+            
+            # Obtener todas las solicitudes
+            requests_resp = admin.table('friend_requests').select('*').order('created_at', desc=True).execute()
+            all_requests = getattr(requests_resp, 'data', []) or []
+            
+            return Response({
+                'ok': True,
+                'total_requests': len(all_requests),
+                'requests': all_requests
+            })
+            
+        except Exception as e:
+            print(f"Error obteniendo todas las solicitudes: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class InviteFriendToTripView(APIView):
+    """Invitar un amigo a un viaje"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            trip_id = request.data.get('trip_id')
+            friend_id = request.data.get('friend_id')
+            organizer_id = request.data.get('organizer_id')
+            
+            if not all([trip_id, friend_id, organizer_id]):
+                return Response({
+                    'ok': False,
+                    'error': 'trip_id, friend_id y organizer_id son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            admin = get_supabase_admin()
+            
+            # Verificar que el organizador es realmente el organizador del viaje
+            trip_resp = admin.table('trips').select('creator_id').eq('id', trip_id).limit(1).execute()
+            trip = (getattr(trip_resp, 'data', None) or [None])[0]
+            
+            if not trip or trip.get('creator_id') != organizer_id:
+                return Response({
+                    'ok': False,
+                    'error': 'Solo el organizador puede invitar amigos'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Verificar que son amigos
+            friendship_resp = admin.table('friend_requests').select('*').or_(
+                f'and(sender_id.eq.{organizer_id},receiver_id.eq.{friend_id},status.eq.accepted)',
+                f'and(sender_id.eq.{friend_id},receiver_id.eq.{organizer_id},status.eq.accepted)'
+            ).limit(1).execute()
+            
+            if not friendship_resp.data or len(friendship_resp.data) == 0:
+                return Response({
+                    'ok': False,
+                    'error': 'Solo puedes invitar a tus amigos'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Verificar que el amigo no esté ya en el viaje
+            existing_member_resp = admin.table('trip_members').select('*').eq('trip_id', trip_id).eq('user_id', friend_id).limit(1).execute()
+            if existing_member_resp.data and len(existing_member_resp.data) > 0:
+                return Response({
+                    'ok': False,
+                    'error': 'Este amigo ya está en el viaje'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Obtener información del viaje y del amigo
+            trip_info_resp = admin.table('trips').select('title, destination').eq('id', trip_id).limit(1).execute()
+            trip_info = (getattr(trip_info_resp, 'data', None) or [None])[0]
+            
+            friend_info_resp = admin.table('User').select('nombre, apellido').eq('userid', friend_id).limit(1).execute()
+            friend_info = (getattr(friend_info_resp, 'data', None) or [None])[0]
+            
+            organizer_info_resp = admin.table('User').select('nombre, apellido').eq('userid', organizer_id).limit(1).execute()
+            organizer_info = (getattr(organizer_info_resp, 'data', None) or [None])[0]
+            
+            # Agregar al amigo al viaje
+            trip_member_data = {
+                'trip_id': trip_id,
+                'user_id': friend_id,
+                'role': 'member',
+                'joined_at': datetime.utcnow().isoformat()
+            }
+            
+            admin.table('trip_members').insert(trip_member_data).execute()
+            
+            # Buscar el chat grupal del viaje
+            chat_resp = admin.table('chat_rooms').select('id').eq('trip_id', trip_id).eq('is_group', True).limit(1).execute()
+            chat_room = (getattr(chat_resp, 'data', None) or [None])[0]
+            
+            if chat_room:
+                # Agregar al amigo al chat grupal
+                chat_member_data = {
+                    'room_id': chat_room['id'],
+                    'user_id': friend_id,
+                    'role': 'member',
+                    'joined_at': datetime.utcnow().isoformat()
+                }
+                
+                admin.table('chat_members').insert(chat_member_data).execute()
+            
+            # Crear notificación para el amigo
+            friend_name = f"{friend_info.get('nombre', '')} {friend_info.get('apellido', '')}".strip() if friend_info else 'Un amigo'
+            organizer_name = f"{organizer_info.get('nombre', '')} {organizer_info.get('apellido', '')}".strip() if organizer_info else 'Un organizador'
+            trip_title = trip_info.get('title', 'Un viaje') if trip_info else 'Un viaje'
+            
+            notification_data = {
+                'user_id': friend_id,
+                'type': 'trip_invitation',
+                'title': 'Invitación a viaje',
+                'message': f'{organizer_name} te invitó al viaje "{trip_title}"',
+                'data': {
+                    'trip_id': trip_id,
+                    'organizer_id': organizer_id,
+                    'organizer_name': organizer_name,
+                    'trip_title': trip_title
+                }
+            }
+            
+            admin.table('notifications').insert(notification_data).execute()
+            
+            return Response({
+                'ok': True,
+                'message': f'Invitación enviada a {friend_name}',
+                'friend_name': friend_name
+            })
+            
+        except Exception as e:
+            print(f"Error invitando amigo a viaje: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
