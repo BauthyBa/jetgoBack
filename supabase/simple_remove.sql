@@ -6,3 +6,4 @@ DROP FUNCTION IF EXISTS public.validate_chat_message_file() CASCADE;
 
 -- Verificar que se eliminó
 SELECT 'Function and trigger removed successfully' as status;
+
