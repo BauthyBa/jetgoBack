@@ -1,0 +1,18 @@
+# Configuración de variables de entorno para el backend
+# Copia este contenido a un archivo .env en la raíz del backend
+
+# Django Configuration
+DJANGO_SECRET_KEY=dev-secret-key-change-me
+DJANGO_DEBUG=True
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
+
+# Database
+DATABASE_URL=postgresql://postgres:password@localhost:5432/jetgo
+
+# Supabase Configuration
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_ANON_KEY=your-anon-key
+
+# Frontend
+FRONTEND_CONFIRM_URL=http://localhost:3000

@@ -105,6 +105,7 @@ INSTALLED_APPS = [
     # Local
     'users',
     'trips',
+    'social',
 ]
 
 MIDDLEWARE = [

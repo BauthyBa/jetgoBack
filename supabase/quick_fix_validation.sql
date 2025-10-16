@@ -10,3 +10,5 @@ DROP TRIGGER IF EXISTS validate_chat_message_trigger ON public.chat_messages;
 -- Verificar que se eliminó
 SELECT 'Function removed successfully' as status;
 
+
+

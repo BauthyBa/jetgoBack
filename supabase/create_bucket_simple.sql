@@ -46,3 +46,5 @@ VALUES (
 -- 4. Verificar que se creó correctamente
 SELECT * FROM storage.buckets WHERE id = 'jetgo-audios';
 
+
+
