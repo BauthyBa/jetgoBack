@@ -192,35 +192,36 @@ class PostLikeView(APIView):
     def post(self, request, post_id):
         """Dar like a un post"""
         try:
-            with connection.cursor() as cursor:
-                # Verificar si ya existe el like
-                cursor.execute("""
-                    SELECT id FROM post_likes 
-                    WHERE post_id = %s AND user_id = %s
-                """, [post_id, request.user.userid])
-                
-                existing_like = cursor.fetchone()
-                
-                if existing_like:
-                    # Quitar like
-                    cursor.execute("""
-                        DELETE FROM post_likes 
-                        WHERE post_id = %s AND user_id = %s
-                    """, [post_id, request.user.userid])
-                    action = "unliked"
-                else:
-                    # Agregar like
-                    like_id = str(uuid.uuid4())
-                    cursor.execute("""
-                        INSERT INTO post_likes (id, post_id, user_id, created_at)
-                        VALUES (%s, %s, %s, %s)
-                    """, [like_id, post_id, request.user.userid, datetime.utcnow()])
-                    action = "liked"
+            user_id = request.data.get('user_id')
+            if not user_id:
+                return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Use Supabase directly
+            supabase = get_supabase_client()
+            
+            # Verificar si ya existe el like
+            existing_like_response = supabase.table('post_likes').select('id').eq('post_id', post_id).eq('user_id', user_id).execute()
+            
+            if existing_like_response.data:
+                # Quitar like
+                supabase.table('post_likes').delete().eq('post_id', post_id).eq('user_id', user_id).execute()
+                action = "unliked"
+            else:
+                # Agregar like
+                like_data = {
+                    'id': str(uuid.uuid4()),
+                    'post_id': post_id,
+                    'user_id': user_id,
+                    'created_at': datetime.utcnow().isoformat()
+                }
+                supabase.table('post_likes').insert(like_data).execute()
+                action = "liked"
             
             return Response({"action": action})
             
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error in PostLikeView: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class CommentListCreateView(APIView):
     authentication_classes = []
@@ -229,62 +230,82 @@ class CommentListCreateView(APIView):
     def get(self, request, post_id):
         """Obtener comentarios de un post"""
         try:
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT pc.*, u.nombre, u.apellido, u.avatar_url,
-                           COUNT(cl.id) as likes_count,
-                           CASE WHEN cl2.id IS NOT NULL THEN true ELSE false END as is_liked
-                    FROM post_comments pc
-                    JOIN "User" u ON pc.user_id = u.userid
-                    LEFT JOIN comment_likes cl ON pc.id = cl.comment_id
-                    LEFT JOIN comment_likes cl2 ON pc.id = cl2.comment_id AND cl2.user_id = %s
-                    WHERE pc.post_id = %s AND pc.deleted_at IS NULL
-                    GROUP BY pc.id, u.nombre, u.apellido, u.avatar_url, cl2.id
-                    ORDER BY pc.created_at ASC
-                """, [request.user.userid, post_id])
+            # Use Supabase directly
+            supabase = get_supabase_client()
+            
+            # Get comments first
+            comments_response = supabase.table('post_comments').select('*').eq('post_id', post_id).is_('deleted_at', 'null').order('created_at', desc=False).execute()
+            
+            comments = []
+            for comment in comments_response.data:
+                # Get user information separately
+                user_response = supabase.table('User').select('nombre, apellido, avatar_url').eq('userid', comment['user_id']).execute()
+                user_data = user_response.data[0] if user_response.data else None
                 
-                columns = [col[0] for col in cursor.description]
-                comments = []
-                for row in cursor.fetchall():
-                    comment_dict = dict(zip(columns, row))
-                    comments.append({
-                        "id": str(comment_dict['id']),
-                        "post_id": str(comment_dict['post_id']),
-                        "user_id": str(comment_dict['user_id']),
-                        "content": comment_dict['content'],
-                        "parent_comment_id": str(comment_dict['parent_comment_id']) if comment_dict['parent_comment_id'] else None,
-                        "created_at": comment_dict['created_at'].isoformat(),
-                        "author": {
-                            "nombre": comment_dict['nombre'],
-                            "apellido": comment_dict['apellido'],
-                            "avatar_url": comment_dict['avatar_url']
-                        },
-                        "likes_count": comment_dict['likes_count'],
-                        "is_liked": comment_dict['is_liked']
-                    })
+                # Get likes count for this comment
+                likes_response = supabase.table('comment_likes').select('id', count='exact').eq('comment_id', comment['id']).execute()
+                likes_count = likes_response.count if likes_response.count else 0
                 
-                return Response({"comments": comments})
+                comments.append({
+                    "id": str(comment['id']),
+                    "post_id": str(comment['post_id']),
+                    "user_id": str(comment['user_id']),
+                    "content": comment['content'],
+                    "parent_comment_id": str(comment['parent_comment_id']) if comment['parent_comment_id'] else None,
+                    "created_at": comment['created_at'],
+                    "updated_at": comment['updated_at'],
+                    "author": {
+                        "nombre": user_data['nombre'] if user_data else 'Usuario',
+                        "apellido": user_data['apellido'] if user_data else '',
+                        "avatar_url": user_data['avatar_url'] if user_data else None
+                    },
+                    "likes_count": likes_count,
+                    "is_liked": False  # TODO: Implement user-specific like status
+                })
+            
+            return Response({"comments": comments})
                 
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error in CommentListCreateView GET: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def post(self, request, post_id):
         """Crear comentario en un post"""
         try:
-            comment_id = str(uuid.uuid4())
+            user_id = request.data.get('user_id')
+            if not user_id:
+                return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+            
             content = request.data.get('content', '')
+            if not content:
+                return Response({"error": "Content is required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            comment_id = str(uuid.uuid4())
             parent_comment_id = request.data.get('parent_comment_id')
             
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO post_comments (id, post_id, user_id, content, parent_comment_id, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, [comment_id, post_id, request.user.userid, content, parent_comment_id, datetime.utcnow()])
+            # Use Supabase directly
+            supabase = get_supabase_client()
             
-            return Response({"message": "Comment created successfully", "comment_id": comment_id})
+            comment_data = {
+                'id': comment_id,
+                'post_id': post_id,
+                'user_id': user_id,
+                'content': content,
+                'parent_comment_id': parent_comment_id,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            result = supabase.table('post_comments').insert(comment_data).execute()
+            
+            if result.data:
+                return Response({"message": "Comment created successfully", "comment_id": comment_id})
+            else:
+                return Response({"error": "Failed to create comment"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error in CommentListCreateView POST: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class StoryListCreateView(APIView):
     authentication_classes = []
