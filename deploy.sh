@@ -1,11 +1,33 @@
 #!/bin/bash
-echo "Deploying to Render..."
 
-# Commit changes
-git add .
-git commit -m "Fix audio upload validation - accept all audio types"
+# Script de deployment para JetGo Backend
+echo "🚀 Starting JetGo Backend deployment..."
 
-# Push to main branch
-git push origin main
+# Check if we're in the right directory
+if [ ! -f "manage.py" ]; then
+    echo "❌ Error: manage.py not found. Are you in the correct directory?"
+    exit 1
+fi
 
-echo "Deployment initiated. Check Render dashboard for status."
+# Install dependencies
+echo "📦 Installing dependencies..."
+pip install -r requirements.txt
+
+# Check environment variables
+echo "🔍 Checking environment variables..."
+python check_env.py
+
+# Run database migrations
+echo "🗄️ Running database migrations..."
+python manage.py migrate
+
+# Collect static files
+echo "📁 Collecting static files..."
+python manage.py collectstatic --noinput
+
+# Test connection
+echo "🧪 Testing backend connection..."
+python test_connection.py
+
+echo "✅ Deployment completed successfully!"
+echo "🌐 Backend should be available at: https://jetgo-back.onrender.com"

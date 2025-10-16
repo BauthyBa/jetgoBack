@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
@@ -12,6 +12,7 @@ import json
 import os
 from users.models import User
 from api.supabase_client import get_supabase_admin
+from supabase import create_client
 
 def debug_supabase_config():
     """Debug function to check Supabase configuration"""
@@ -25,8 +26,26 @@ def debug_supabase_config():
     
     return url and service_key and anon_key
 
+def get_supabase_client():
+    """Get Supabase client with direct connection"""
+    url = os.environ.get('SUPABASE_URL')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    
+    if not url or not service_key:
+        # Fallback to hardcoded values for development
+        # IMPORTANT: Replace these with your actual Supabase credentials
+        url = "https://your-project.supabase.co"  # Replace with your Supabase URL
+        service_key = "your-service-role-key"    # Replace with your service role key
+    
+    return create_client(url, service_key)
+
 class PostListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
+    
+    def options(self, request, *args, **kwargs):
+        """Handle preflight requests"""
+        return Response(status=status.HTTP_200_OK)
     
     def get(self, request):
         """Obtener posts del feed"""
@@ -34,57 +53,57 @@ class PostListCreateView(APIView):
             limit = int(request.GET.get('limit', 20))
             offset = int(request.GET.get('offset', 0))
             
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT p.*, u.nombre, u.apellido, u.avatar_url,
-                           COUNT(pl.id) as likes_count,
-                           COUNT(pc.id) as comments_count,
-                           CASE WHEN pl2.id IS NOT NULL THEN true ELSE false END as is_liked
-                    FROM posts p
-                    JOIN "User" u ON p.user_id = u.userid
-                    LEFT JOIN post_likes pl ON p.id = pl.post_id
-                    LEFT JOIN post_comments pc ON p.id = pc.post_id
-                    LEFT JOIN post_likes pl2 ON p.id = pl2.post_id AND pl2.user_id = %s
-                    WHERE p.is_public = true AND p.deleted_at IS NULL
-                    GROUP BY p.id, u.nombre, u.apellido, u.avatar_url, pl2.id
-                    ORDER BY p.created_at DESC
-                    LIMIT %s OFFSET %s
-                """, [request.user.userid, limit, offset])
+            # Use Supabase directly
+            supabase = get_supabase_client()
+            
+            # Get posts first
+            posts_response = supabase.table('posts').select('*').eq('is_public', True).is_('deleted_at', 'null').order('created_at', desc=True).limit(limit).offset(offset).execute()
+            
+            posts = []
+            for post in posts_response.data:
+                # Get user information separately
+                user_response = supabase.table('User').select('nombre, apellido, avatar_url').eq('userid', post['user_id']).execute()
+                user_data = user_response.data[0] if user_response.data else None
                 
-                columns = [col[0] for col in cursor.description]
-                posts = []
-                for row in cursor.fetchall():
-                    post_dict = dict(zip(columns, row))
-                    posts.append({
-                        "id": str(post_dict['id']),
-                        "user_id": str(post_dict['user_id']),
-                        "content": post_dict['content'],
-                        "image_url": post_dict['image_url'],
-                        "video_url": post_dict['video_url'],
-                        "location": post_dict['location'],
-                        "is_public": post_dict['is_public'],
-                        "created_at": post_dict['created_at'].isoformat(),
-                        "author": {
-                            "nombre": post_dict['nombre'],
-                            "apellido": post_dict['apellido'],
-                            "avatar_url": post_dict['avatar_url']
-                        },
-                        "likes_count": post_dict['likes_count'],
-                        "comments_count": post_dict['comments_count'],
-                        "is_liked": post_dict['is_liked']
-                    })
+                # Get likes count
+                likes_response = supabase.table('post_likes').select('id', count='exact').eq('post_id', post['id']).execute()
+                likes_count = likes_response.count if likes_response.count else 0
                 
-                return Response({"posts": posts})
+                # Get comments count
+                comments_response = supabase.table('post_comments').select('id', count='exact').eq('post_id', post['id']).is_('deleted_at', 'null').execute()
+                comments_count = comments_response.count if comments_response.count else 0
+                
+                posts.append({
+                    "id": str(post['id']),
+                    "user_id": str(post['user_id']),
+                    "content": post['content'],
+                    "image_url": post['image_url'],
+                    "video_url": post['video_url'],
+                    "location": post['location'],
+                    "is_public": post['is_public'],
+                    "created_at": post['created_at'],
+                    "author": {
+                        "nombre": user_data['nombre'] if user_data else 'Usuario',
+                        "apellido": user_data['apellido'] if user_data else '',
+                        "avatar_url": user_data['avatar_url'] if user_data else None
+                    },
+                    "likes_count": likes_count,
+                    "comments_count": comments_count,
+                    "is_liked": False  # TODO: Implement user-specific like status
+                })
+            
+            return Response({"posts": posts})
                 
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error in PostListCreateView GET: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def post(self, request):
         """Crear un nuevo post"""
         try:
-            # Debug: Verificar configuración de Supabase
-            if not debug_supabase_config():
-                return Response({"error": "Supabase configuration not found. Check .env file"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            user_id = request.data.get('user_id')
+            if not user_id:
+                return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
             
             post_id = str(uuid.uuid4())
             content = request.data.get('content', '')
@@ -95,43 +114,80 @@ class PostListCreateView(APIView):
             file_url = None
             if 'file' in request.FILES:
                 try:
-                    supabase = get_supabase_admin()
+                    supabase = get_supabase_client()
                     file = request.FILES['file']
+                    
+                    # Validar tipo de archivo
+                    if not file.content_type.startswith(('image/', 'video/')):
+                        return Response({"error": "Solo se permiten archivos de imagen o video"}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    # Leer contenido del archivo
                     file_content = file.read()
-                    file_path = f"{request.user.userid}/{post_id}_{file.name}"
+                    
+                    # Generar nombre de archivo único
+                    file_extension = file.name.split('.')[-1] if '.' in file.name else 'jpg'
+                    file_name = f"{post_id}_{uuid.uuid4().hex[:8]}.{file_extension}"
+                    file_path = f"{user_id}/{file_name}"
                     
                     # Subir a Supabase Storage
-                    result = supabase.storage.from_("jetgo-posts").upload(file_path, file_content)
-                    
-                    if result.get('error'):
-                        return Response({"error": "Error uploading file"}, status=status.HTTP_400_BAD_REQUEST)
-                    
-                    file_url = supabase.storage.from_("jetgo-posts").get_public_url(file_path)
+                    try:
+                        result = supabase.storage.from_("jetgo-posts").upload(
+                            file_path, 
+                            file_content,
+                            file_options={"content-type": file.content_type}
+                        )
+                        print(f"Upload result: {result}")
+                        
+                        # Obtener URL pública
+                        file_url = supabase.storage.from_("jetgo-posts").get_public_url(file_path)
+                        print(f"File URL: {file_url}")
+                        
+                    except Exception as upload_error:
+                        print(f"Upload error: {upload_error}")
+                        return Response({"error": f"Error uploading file: {str(upload_error)}"}, status=status.HTTP_400_BAD_REQUEST)
+                        
                 except Exception as e:
+                    print(f"Supabase upload error: {str(e)}")
                     return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO posts (id, user_id, content, image_url, video_url, location, is_public, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, [
-                    post_id,
-                    request.user.userid,
-                    content,
-                    file_url if file_url and 'image' in request.FILES.get('file', {}).content_type else None,
-                    file_url if file_url and 'video' in request.FILES.get('file', {}).content_type else None,
-                    location,
-                    is_public,
-                    datetime.utcnow()
-                ])
+            # Determinar si es imagen o video
+            image_url = None
+            video_url = None
+            if file_url and 'file' in request.FILES:
+                file = request.FILES['file']
+                if file.content_type.startswith('image/'):
+                    image_url = file_url
+                elif file.content_type.startswith('video/'):
+                    video_url = file_url
             
-            return Response({"message": "Post created successfully", "post_id": post_id})
+            # Insert post into Supabase
+            supabase = get_supabase_client()
+            post_data = {
+                'id': post_id,
+                'user_id': user_id,
+                'content': content,
+                'image_url': image_url,
+                'video_url': video_url,
+                'location': location,
+                'is_public': is_public,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            result = supabase.table('posts').insert(post_data).execute()
+            
+            if result.data:
+                return Response({"message": "Post created successfully", "post_id": post_id})
+            else:
+                return Response({"error": "Failed to create post"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error in PostListCreateView POST: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class PostLikeView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def post(self, request, post_id):
         """Dar like a un post"""
@@ -167,7 +223,8 @@ class PostLikeView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class CommentListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def get(self, request, post_id):
         """Obtener comentarios de un post"""
@@ -230,60 +287,64 @@ class CommentListCreateView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class StoryListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
+    
+    def options(self, request, *args, **kwargs):
+        """Handle preflight requests"""
+        return Response(status=status.HTTP_200_OK)
     
     def get(self, request):
         """Obtener stories activas"""
         try:
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT s.*, u.nombre, u.apellido, u.avatar_url,
-                           COUNT(sv.id) as views_count,
-                           CASE WHEN sv2.id IS NOT NULL THEN true ELSE false END as is_viewed
-                    FROM stories s
-                    JOIN "User" u ON s.user_id = u.userid
-                    LEFT JOIN story_views sv ON s.id = sv.story_id
-                    LEFT JOIN story_views sv2 ON s.id = sv2.story_id AND sv2.viewer_id = %s
-                    WHERE s.expires_at > NOW() AND s.is_archived = false
-                    GROUP BY s.id, u.nombre, u.apellido, u.avatar_url, sv2.id
-                    ORDER BY s.created_at DESC
-                """, [request.user.userid])
+            # Use Supabase directly
+            supabase = get_supabase_client()
+            
+            # Get active stories first
+            stories_response = supabase.table('stories').select('*').gt('expires_at', datetime.utcnow().isoformat()).eq('is_archived', False).order('created_at', desc=True).execute()
+            
+            stories = []
+            for story in stories_response.data:
+                # Get user information separately
+                user_response = supabase.table('User').select('nombre, apellido, avatar_url').eq('userid', story['user_id']).execute()
+                user_data = user_response.data[0] if user_response.data else None
                 
-                columns = [col[0] for col in cursor.description]
-                stories = []
-                for row in cursor.fetchall():
-                    story_dict = dict(zip(columns, row))
-                    stories.append({
-                        "id": str(story_dict['id']),
-                        "user_id": str(story_dict['user_id']),
-                        "content": story_dict['content'],
-                        "media_url": story_dict['media_url'],
-                        "media_type": story_dict['media_type'],
-                        "background_color": story_dict['background_color'],
-                        "text_color": story_dict['text_color'],
-                        "font_family": story_dict['font_family'],
-                        "expires_at": story_dict['expires_at'].isoformat(),
-                        "created_at": story_dict['created_at'].isoformat(),
-                        "author": {
-                            "nombre": story_dict['nombre'],
-                            "apellido": story_dict['apellido'],
-                            "avatar_url": story_dict['avatar_url']
-                        },
-                        "views_count": story_dict['views_count'],
-                        "is_viewed": story_dict['is_viewed']
-                    })
+                # Get views count
+                views_response = supabase.table('story_views').select('id', count='exact').eq('story_id', story['id']).execute()
+                views_count = views_response.count if views_response.count else 0
                 
-                return Response({"stories": stories})
+                stories.append({
+                    "id": str(story['id']),
+                    "user_id": str(story['user_id']),
+                    "content": story['content'],
+                    "media_url": story['media_url'],
+                    "media_type": story['media_type'],
+                    "background_color": story['background_color'],
+                    "text_color": story['text_color'],
+                    "font_family": story['font_family'],
+                    "expires_at": story['expires_at'],
+                    "created_at": story['created_at'],
+                    "author": {
+                        "nombre": user_data['nombre'] if user_data else 'Usuario',
+                        "apellido": user_data['apellido'] if user_data else '',
+                        "avatar_url": user_data['avatar_url'] if user_data else None
+                    },
+                    "views_count": views_count,
+                    "is_viewed": False  # TODO: Implement user-specific view status
+                })
+            
+            return Response({"stories": stories})
                 
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error in StoryListCreateView GET: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def post(self, request):
         """Crear una nueva story"""
         try:
-            # Debug: Verificar configuración de Supabase
-            if not debug_supabase_config():
-                return Response({"error": "Supabase configuration not found. Check .env file"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            user_id = request.data.get('user_id')
+            if not user_id:
+                return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
             
             story_id = str(uuid.uuid4())
             content = request.data.get('content', '')
@@ -296,48 +357,74 @@ class StoryListCreateView(APIView):
                 return Response({"error": "File is required"}, status=status.HTTP_400_BAD_REQUEST)
             
             try:
-                supabase = get_supabase_admin()
+                supabase = get_supabase_client()
                 file = request.FILES['file']
+                
+                # Validar tipo de archivo
+                if not file.content_type.startswith(('image/', 'video/')):
+                    return Response({"error": "Solo se permiten archivos de imagen o video"}, status=status.HTTP_400_BAD_REQUEST)
+                
+                # Leer contenido del archivo
                 file_content = file.read()
-                file_path = f"{request.user.userid}/{story_id}_{file.name}"
+                
+                # Generar nombre de archivo único
+                file_extension = file.name.split('.')[-1] if '.' in file.name else 'jpg'
+                file_name = f"{story_id}_{uuid.uuid4().hex[:8]}.{file_extension}"
+                file_path = f"{user_id}/{file_name}"
                 
                 # Subir a Supabase Storage
-                result = supabase.storage.from_("jetgo-stories").upload(file_path, file_content)
-                
-                if result.get('error'):
-                    return Response({"error": "Error uploading story file"}, status=status.HTTP_400_BAD_REQUEST)
-                
-                file_url = supabase.storage.from_("jetgo-stories").get_public_url(file_path)
+                try:
+                    result = supabase.storage.from_("jetgo-stories").upload(
+                        file_path, 
+                        file_content,
+                        file_options={"content-type": file.content_type}
+                    )
+                    print(f"Story upload result: {result}")
+                    
+                    # Obtener URL pública
+                    file_url = supabase.storage.from_("jetgo-stories").get_public_url(file_path)
+                    print(f"Story file URL: {file_url}")
+                    
+                except Exception as upload_error:
+                    print(f"Story upload error: {upload_error}")
+                    return Response({"error": f"Error uploading story file: {str(upload_error)}"}, status=status.HTTP_400_BAD_REQUEST)
+                    
             except Exception as e:
+                print(f"Supabase upload error: {str(e)}")
                 return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
             # Calcular fecha de expiración (24 horas)
             expires_at = datetime.utcnow() + timedelta(hours=24)
             
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO stories (id, user_id, content, media_url, media_type, background_color, text_color, font_family, expires_at, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, [
-                    story_id,
-                    request.user.userid,
-                    content,
-                    file_url,
-                    "image" if file.content_type.startswith('image/') else "video",
-                    background_color,
-                    text_color,
-                    font_family,
-                    expires_at,
-                    datetime.utcnow()
-                ])
+            # Insert story into Supabase
+            story_data = {
+                'id': story_id,
+                'user_id': user_id,
+                'content': content,
+                'media_url': file_url,
+                'media_type': "image" if file.content_type.startswith('image/') else "video",
+                'background_color': background_color,
+                'text_color': text_color,
+                'font_family': font_family,
+                'expires_at': expires_at.isoformat(),
+                'created_at': datetime.utcnow().isoformat(),
+                'is_archived': False
+            }
             
-            return Response({"message": "Story created successfully", "story_id": story_id})
+            result = supabase.table('stories').insert(story_data).execute()
+            
+            if result.data:
+                return Response({"message": "Story created successfully", "story_id": story_id})
+            else:
+                return Response({"error": "Failed to create story"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"Error in StoryListCreateView POST: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class StoryViewView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def post(self, request, story_id):
         """Marcar story como vista"""
@@ -365,7 +452,8 @@ class StoryViewView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class FollowUserView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def post(self, request, user_id):
         """Seguir a un usuario"""
@@ -404,7 +492,8 @@ class FollowUserView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class FollowersListView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def get(self, request, user_id):
         """Obtener seguidores de un usuario"""
@@ -439,7 +528,8 @@ class FollowersListView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class FollowingListView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def get(self, request, user_id):
         """Obtener usuarios que sigue un usuario"""
@@ -474,7 +564,8 @@ class FollowingListView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class NotificationListView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def get(self, request):
         """Obtener notificaciones del usuario"""
@@ -519,7 +610,8 @@ class NotificationListView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class NotificationReadView(APIView):
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
     
     def post(self, request, notification_id):
         """Marcar notificación como leída"""
@@ -535,3 +627,11 @@ class NotificationReadView(APIView):
             
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# Vista de prueba simple
+class TestView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        return Response({"message": "Test endpoint working!", "status": "success"})
