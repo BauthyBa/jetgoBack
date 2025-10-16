@@ -2,7 +2,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.response import Response
-from .serializers import RegisterSerializer, LoginSerializer, ReviewSerializer, CreateReviewSerializer
+from .serializers import RegisterSerializer, LoginSerializer, ReviewSerializer, CreateReviewSerializer, GoogleAuthSerializer
 from .models import User, Review
 from django.db.models import Avg
 from api.supabase_client import get_supabase_admin
@@ -72,6 +72,27 @@ class LoginView(generics.GenericAPIView):
         return Response({
             'access': serializer.validated_data['supabase_access'],
             'refresh': serializer.validated_data['supabase_refresh'],
+        })
+
+class GoogleAuthView(generics.GenericAPIView):
+    """Vista para manejar la autenticación con Google OAuth"""
+    serializer_class = GoogleAuthSerializer
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request, *args, **kwargs):
+        """
+        Procesa la autenticación con Google.
+        Acepta:
+        - access_token y refresh_token (si el frontend ya los obtuvo)
+        - code (código de autorización para intercambiar por tokens)
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        return Response({
+            'access': serializer.validated_data['supabase_access'],
+            'refresh': serializer.validated_data['supabase_refresh'],
+            'user_id': serializer.validated_data['user_id'],
         })
 
 class UpsertProfileView(generics.GenericAPIView):

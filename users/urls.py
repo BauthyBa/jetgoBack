@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     RegisterView,
     LoginView,
+    GoogleAuthView,
     UpsertProfileView,
     InviteView,
     TripCreateView,
@@ -54,6 +55,7 @@ from .reports_views import (
 urlpatterns = [
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', LoginView.as_view(), name='login'),
+    path('auth/google/', GoogleAuthView.as_view(), name='google_auth'),
     path('auth/upsert_profile/', UpsertProfileView.as_view(), name='upsert_profile'),
     path('chat/invite/', InviteView.as_view(), name='chat_invite'),
     path('trips/create/', TripCreateView.as_view(), name='trip_create'),
