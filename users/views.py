@@ -2,14 +2,17 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.response import Response
-from .serializers import RegisterSerializer, LoginSerializer, ReviewSerializer, CreateReviewSerializer, GoogleAuthSerializer
+from .serializers import RegisterSerializer, LoginSerializer, ReviewSerializer, CreateReviewSerializer
 from .models import User, Review
 from django.db.models import Avg
-from api.supabase_client import get_supabase_admin
+from api.supabase_client import get_supabase_admin, get_supabase_anon
 from os import environ
 import re
 from datetime import datetime, date
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_trip_status(start_date, end_date=None):
@@ -74,26 +77,139 @@ class LoginView(generics.GenericAPIView):
             'refresh': serializer.validated_data['supabase_refresh'],
         })
 
-class GoogleAuthView(generics.GenericAPIView):
-    """Vista para manejar la autenticación con Google OAuth"""
-    serializer_class = GoogleAuthSerializer
+
+class GoogleAuthView(APIView):
+    """Endpoint para validar y procesar inicio de sesión con Google OAuth"""
     permission_classes = [permissions.AllowAny]
-    
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         """
-        Procesa la autenticación con Google.
-        Acepta:
-        - access_token y refresh_token (si el frontend ya los obtuvo)
-        - code (código de autorización para intercambiar por tokens)
-        """
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        Recibe el access_token de Supabase después del OAuth de Google
+        y crea/actualiza el perfil del usuario en la base de datos.
         
-        return Response({
-            'access': serializer.validated_data['supabase_access'],
-            'refresh': serializer.validated_data['supabase_refresh'],
-            'user_id': serializer.validated_data['user_id'],
-        })
+        Expected payload:
+        {
+            "access_token": "supabase_access_token",
+            "refresh_token": "supabase_refresh_token" (opcional)
+        }
+        """
+        try:
+            access_token = request.data.get('access_token')
+            refresh_token = request.data.get('refresh_token')
+            
+            if not access_token:
+                return Response(
+                    {'ok': False, 'error': 'access_token requerido'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Validar el token con Supabase y obtener información del usuario
+            anon = get_supabase_anon()
+            admin = get_supabase_admin()
+            
+            try:
+                # Obtener usuario usando el access_token
+                user_response = anon.auth.get_user(access_token)
+                user = getattr(user_response, 'user', None)
+                
+                if not user:
+                    return Response(
+                        {'ok': False, 'error': 'Token inválido o expirado'},
+                        status=status.HTTP_401_UNAUTHORIZED
+                    )
+                
+                user_id = str(user.id)
+                email = getattr(user, 'email', None)
+                user_metadata = getattr(user, 'user_metadata', {}) or {}
+                
+                # Extraer información del usuario de Google
+                full_name = user_metadata.get('full_name', '')
+                avatar_url = user_metadata.get('avatar_url', '') or user_metadata.get('picture', '')
+                
+                # Separar nombre y apellido si están juntos
+                name_parts = full_name.split(' ', 1) if full_name else ['', '']
+                first_name = name_parts[0] if len(name_parts) > 0 else ''
+                last_name = name_parts[1] if len(name_parts) > 1 else ''
+                
+                # Verificar si el usuario ya existe en la tabla User
+                schema = environ.get('SUPABASE_SCHEMA', 'public')
+                table = environ.get('SUPABASE_USERS_TABLE', 'User')
+                
+                try:
+                    existing_user = admin.schema(schema).table(table).select('*').eq('userid', user_id).limit(1).execute()
+                    user_data = (getattr(existing_user, 'data', None) or [None])[0]
+                    
+                    if user_data:
+                        # Usuario existe, actualizar solo si es necesario
+                        update_data = {}
+                        
+                        if email and not user_data.get('mail'):
+                            update_data['mail'] = email
+                        
+                        if avatar_url and not user_data.get('avatar_url'):
+                            update_data['avatar_url'] = avatar_url
+                        
+                        # Marcar email como confirmado para usuarios de Google
+                        if not user_data.get('mail_confirmacion'):
+                            update_data['mail_confirmacion'] = True
+                        
+                        if update_data:
+                            admin.schema(schema).table(table).update(update_data).eq('userid', user_id).execute()
+                            logger.info(f'Usuario Google actualizado: {user_id}')
+                    else:
+                        # Usuario no existe, crear nuevo registro
+                        new_user_data = {
+                            'userid': user_id,
+                            'mail': email,
+                            'nombre': first_name,
+                            'apellido': last_name,
+                            'avatar_url': avatar_url,
+                            'mail_confirmacion': True,  # Los usuarios de Google ya están confirmados
+                        }
+                        
+                        # Agregar estuserid por defecto si está configurado
+                        default_est = environ.get('SUPABASE_DEFAULT_ESTUSERID')
+                        if default_est is not None and default_est != '':
+                            try:
+                                new_user_data['estuserid'] = int(default_est)
+                            except Exception:
+                                new_user_data['estuserid'] = default_est
+                        
+                        admin.schema(schema).table(table).insert(new_user_data).execute()
+                        logger.info(f'Nuevo usuario Google creado: {user_id}')
+                
+                except Exception as e:
+                    logger.error(f'Error al crear/actualizar usuario en DB: {e}')
+                    # No fallar si hay error en DB, el usuario puede continuar
+                
+                # Retornar tokens y datos del usuario
+                return Response({
+                    'ok': True,
+                    'access': access_token,
+                    'refresh': refresh_token,
+                    'user': {
+                        'id': user_id,
+                        'email': email,
+                        'first_name': first_name,
+                        'last_name': last_name,
+                        'avatar_url': avatar_url,
+                    }
+                })
+                
+            except Exception as e:
+                logger.error(f'Error al validar token de Google: {e}')
+                return Response(
+                    {'ok': False, 'error': f'Error al validar token: {str(e)}'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+                
+        except Exception as e:
+            logger.error(f'Error en GoogleAuthView: {e}')
+            return Response(
+                {'ok': False, 'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 class UpsertProfileView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
