@@ -35,6 +35,7 @@ from .views import (
     CheckFriendshipStatusView,
     DebugFriendRequestsView,
     InviteFriendToTripView,
+    DeleteAccountView,
 )
 from .supabase_views import (
     SupabaseCreateReviewView,
@@ -105,5 +106,8 @@ urlpatterns = [
     path('friends/check-status/', CheckFriendshipStatusView.as_view(), name='check_friendship_status'),
     path('friends/debug/', DebugFriendRequestsView.as_view(), name='debug_friend_requests'),
     path('friends/invite-to-trip/', InviteFriendToTripView.as_view(), name='invite_friend_to_trip'),
+    
+    # Eliminar cuenta
+    path('delete-account/', DeleteAccountView.as_view(), name='delete_account'),
 ]
 

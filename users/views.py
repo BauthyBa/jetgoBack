@@ -2611,3 +2611,77 @@ class InviteFriendToTripView(APIView):
                 'ok': False,
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class DeleteAccountView(APIView):
+    """Vista para eliminar la cuenta de un usuario"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def delete(self, request, *args, **kwargs):
+        try:
+            user_id = request.user.id
+            admin = get_supabase_admin()
+            
+            # Eliminar datos relacionados del usuario en Supabase
+            try:
+                # Eliminar notificaciones
+                admin.table('notifications').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar solicitudes de amistad
+                admin.table('friend_requests').delete().or_(f'user_id.eq.{user_id},friend_id.eq.{user_id}').execute()
+                
+                # Eliminar membresías de chat
+                admin.table('chat_members').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar mensajes de chat del usuario
+                admin.table('chat_messages').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar membresías de viajes
+                admin.table('trip_members').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar aplicaciones de viajes
+                admin.table('trip_applications').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar reseñas del usuario
+                admin.table('trip_reviews').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar reportes del usuario
+                admin.table('user_reports').delete().or_(f'reporter_id.eq.{user_id},reported_id.eq.{user_id}').execute()
+                
+                # Eliminar gastos del usuario
+                admin.table('trip_expenses').delete().eq('payer_id', str(user_id)).execute()
+                
+                # Eliminar posts del usuario
+                admin.table('posts').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar stories del usuario
+                admin.table('stories').delete().eq('user_id', str(user_id)).execute()
+                
+                # Eliminar el perfil del usuario
+                admin.table('User').delete().eq('userid', str(user_id)).execute()
+                
+            except Exception as e:
+                print(f"Error eliminando datos de Supabase: {str(e)}")
+                # Continuar aunque falle la limpieza parcial
+            
+            # Eliminar el usuario de Django
+            try:
+                request.user.delete()
+            except Exception as e:
+                print(f"Error eliminando usuario de Django: {str(e)}")
+                return Response({
+                    'ok': False,
+                    'error': 'Error eliminando la cuenta'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            return Response({
+                'ok': True,
+                'message': 'Cuenta eliminada exitosamente'
+            })
+            
+        except Exception as e:
+            print(f"Error general eliminando cuenta: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
