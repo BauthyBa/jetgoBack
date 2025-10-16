@@ -2,6 +2,9 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    # Test endpoint
+    path('test/', views.TestView.as_view(), name='test'),
+    
     # Posts
     path('posts/', views.PostListCreateView.as_view(), name='post-list-create'),
     path('posts/<str:post_id>/like/', views.PostLikeView.as_view(), name='post-like'),

@@ -34,7 +34,7 @@ if _hosts_env:
     ALLOWED_HOSTS = [h.strip() for h in _hosts_env.split(',') if h.strip()]
 else:
     # Permit Render health checks and local dev by default
-    ALLOWED_HOSTS = ['.onrender.com', 'localhost', '127.0.0.1']
+    ALLOWED_HOSTS = ['.onrender.com', 'localhost', '127.0.0.1', 'testserver']
 
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
@@ -53,6 +53,9 @@ CORS_ALLOWED_HEADERS = [
     'X-User-ID',
     'x-user-id',
     'X-User-ID',
+    'Access-Control-Allow-Origin',
+    'Access-Control-Allow-Headers',
+    'Access-Control-Allow-Methods',
 ]
 CORS_ALLOWED_METHODS = [
     'DELETE',
@@ -61,6 +64,13 @@ CORS_ALLOWED_METHODS = [
     'PATCH',
     'POST',
     'PUT',
+]
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "https://jetgo-front.vercel.app",
 ]
 
 _csrf_from_hosts = [f"https://{h.lstrip('.')}" for h in ALLOWED_HOSTS if h not in ('localhost', '127.0.0.1')]
@@ -77,6 +87,9 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',
+    ],
     'DEFAULT_PARSER_CLASSES': [
         'rest_framework.parsers.JSONParser',
         'rest_framework.parsers.MultiPartParser',
@@ -109,6 +122,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'api.cors_middleware.CustomCorsMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
