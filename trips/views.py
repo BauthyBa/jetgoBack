@@ -253,17 +253,19 @@ def create_private_chat_for_application(application):
             except Exception:
                 pass
 
-            # Mensaje inicial del aplicante (si lo hay)
+            # Mensaje inicial del aplicante con información de perfil
             initial = (application.message or '').strip()
-            if initial:
-                try:
-                    admin.table('chat_messages').insert({
-                        'room_id': room['id'],
-                        'user_id': str(application.applicant.id),
-                        'content': initial,
-                    }).execute()
-                except Exception:
-                    pass
+            # Construir mensaje con formato especial que incluye el ID de aplicación y usuario
+            message_content = f"APP|{application.id}|{initial}" if initial else f"APP|{application.id}|¡Hola! Me gustaría unirme a este viaje."
+            
+            try:
+                admin.table('chat_messages').insert({
+                    'room_id': room['id'],
+                    'user_id': str(application.applicant.id),
+                    'content': message_content,
+                }).execute()
+            except Exception:
+                pass
             logger.info(f"Chat privado creado para aplicación {application.id}")
     except Exception as e:
         logger.error(f"Error creando chat privado para aplicación {application.id}: {e}")
