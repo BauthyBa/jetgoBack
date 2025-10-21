@@ -80,3 +80,9 @@ ORDER BY policyname;
 -- 6. Mensaje de éxito
 SELECT 'Políticas de Storage configuradas exitosamente' as resultado;
 
+
+
+
+
+
+

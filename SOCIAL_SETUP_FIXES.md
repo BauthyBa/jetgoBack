@@ -141,3 +141,9 @@ console.log('User data:', user)
 5. ✅ Verificar que aparezca el avatar
 6. ✅ Verificar sugerencias de usuarios
 
+
+
+
+
+
+

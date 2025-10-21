@@ -303,13 +303,39 @@ def send_chat_message(request):
         if not membership.data:
             return Response({'error': 'No tienes acceso a esta sala'}, status=status.HTTP_403_FORBIDDEN)
         
+        # Obtener perfil completo del remitente
+        sender_resp = admin.table('User').select('*').eq('userid', str(user_id)).limit(1).execute()
+        sender = (getattr(sender_resp, 'data', None) or [None])[0]
+        
+        # Obtener reseñas del usuario
+        reviews_resp = admin.table('reviews').select('rating').eq('reviewed_user_id', str(user_id)).execute()
+        reviews = getattr(reviews_resp, 'data', []) or []
+        avg_rating = sum([review.get('rating', 0) for review in reviews]) / len(reviews) if reviews else 0
+        
+        # Obtener intereses del usuario si existen
+        interests_resp = admin.table('user_interests').select('interest').eq('user_id', str(user_id)).execute()
+        interests = [item.get('interest') for item in (getattr(interests_resp, 'data', []) or [])]
+        
+        # Preparar datos del perfil de usuario
+        user_profile = {
+            'id': str(user_id),
+            'nombre': sender.get('nombre', ''),
+            'apellido': sender.get('apellido', ''),
+            'avatar_url': sender.get('avatar_url', ''),
+            'descripcion': sender.get('descripcion', ''),
+            'avg_rating': avg_rating,
+            'reviews_count': len(reviews),
+            'interests': interests
+        }
+        
         # Preparar datos del mensaje
         message_data = {
             'room_id': room_id,
             'user_id': str(user_id),
             'content': content,
             'is_file': bool(file_data),
-            'created_at': datetime.utcnow().isoformat()
+            'created_at': datetime.utcnow().isoformat(),
+            'user_profile': user_profile
         }
         
         # Si es un archivo, agregar información del archivo
@@ -344,10 +370,19 @@ def send_chat_message(request):
                 
                 print(f"🔔 Miembros encontrados: {members}")
                 
-                # Obtener nombre del remitente
-                sender_resp = admin.table('User').select('nombre, apellido').eq('userid', str(user_id)).limit(1).execute()
+                # Obtener perfil completo del remitente
+                sender_resp = admin.table('User').select('*').eq('userid', str(user_id)).limit(1).execute()
                 sender = (getattr(sender_resp, 'data', None) or [None])[0]
                 sender_name = f"{sender.get('nombre', '')} {sender.get('apellido', '')}".strip() if sender else 'Un usuario'
+                
+                # Obtener reseñas del usuario
+                reviews_resp = admin.table('reviews').select('rating').eq('reviewed_user_id', str(user_id)).execute()
+                reviews = getattr(reviews_resp, 'data', []) or []
+                avg_rating = sum([review.get('rating', 0) for review in reviews]) / len(reviews) if reviews else 0
+                
+                # Obtener intereses del usuario si existen
+                interests_resp = admin.table('user_interests').select('interest').eq('user_id', str(user_id)).execute()
+                interests = [item.get('interest') for item in (getattr(interests_resp, 'data', []) or [])]
                 
                 print(f"🔔 Nombre del remitente: {sender_name}")
                 
@@ -381,7 +416,8 @@ def send_chat_message(request):
                                 'sender_id': str(user_id),
                                 'sender_name': sender_name,
                                 'message_content': content[:100] + '...' if len(content) > 100 else content,
-                                'is_file': bool(file_data)
+                                'is_file': bool(file_data),
+                                'user_profile': user_profile
                             }
                         }
                         
