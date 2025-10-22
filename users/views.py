@@ -97,6 +97,7 @@ class UpsertProfileView(generics.GenericAPIView):
                 'bio': request.data.get('bio'),
                 'interests': request.data.get('interests'),
                 'favorite_travel_styles': request.data.get('favorite_travel_styles'),
+                'avatar_url': request.data.get('avatar_url'),
             }
             # Use upsert to insert or update by userid
             try:
