@@ -112,6 +112,89 @@ def test_audio_upload(request):
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
+def upload_camera_image(request):
+    """Endpoint específico para subir imágenes de cámara"""
+    try:
+        logger.info("=== CAMERA IMAGE UPLOAD ===")
+        logger.info(f"Request data: {request.data}")
+        logger.info(f"Request files: {request.FILES}")
+        
+        # Obtener datos del body
+        user_id = request.data.get('user_id')
+        room_id = request.data.get('room_id')
+        
+        if not user_id or not room_id:
+            return Response({'error': 'user_id y room_id son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Verificar que el archivo existe
+        if 'file' not in request.FILES:
+            return Response({'error': 'No se encontró archivo'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        file = request.FILES['file']
+        
+        # Verificar que es una imagen
+        if not file.content_type.startswith('image/'):
+            return Response({'error': 'Solo se permiten imágenes'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Generar nombre único
+        import uuid
+        unique_filename = f"camera_{uuid.uuid4()}.jpg"
+        file_path = f"{user_id}/{unique_filename}"
+        
+        # Leer contenido
+        file_content = file.read()
+        
+        # Subir a chat-files bucket (que acepta imágenes)
+        admin = get_supabase_admin()
+        upload_response = admin.storage.from_('chat-files').upload(
+            file_path,
+            file_content,
+            file_options={
+                'content-type': 'image/jpeg',
+                'cache-control': '3600'
+            }
+        )
+        
+        if hasattr(upload_response, 'error') and upload_response.error:
+            logger.error(f"Error subiendo imagen: {upload_response.error}")
+            return Response({'error': 'Error subiendo imagen'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        # Obtener URL pública
+        file_url = admin.storage.from_('chat-files').get_public_url(file_path)
+        
+        # Crear mensaje en el chat
+        message_content = f"📸 Imagen capturada: {file_url}"
+        
+        # Insertar mensaje en la base de datos
+        message_response = admin.table('chat_messages').insert({
+            'room_id': room_id,
+            'user_id': user_id,
+            'content': message_content,
+            'message_type': 'image',
+            'file_url': file_url,
+            'file_name': unique_filename,
+            'file_size': len(file_content),
+            'file_type': 'image/jpeg'
+        }).execute()
+        
+        if hasattr(message_response, 'error') and message_response.error:
+            logger.error(f"Error creando mensaje: {message_response.error}")
+            return Response({'error': 'Error creando mensaje'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        return Response({
+            'status': 'success',
+            'message': 'Imagen subida correctamente',
+            'file_url': file_url,
+            'file_path': file_path,
+            'bucket': 'chat-files'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error en upload_camera_image: {e}")
+        return Response({'error': f'Error interno: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
 def upload_chat_file(request):
     """Subir archivo para el chat y crear mensaje en una sola operación"""
     try:
@@ -184,21 +267,23 @@ def upload_chat_file(request):
             
             # Subir directamente a Supabase Storage
             # Usar bucket de audios si es audio, sino usar chat-files
+            # chat-files acepta: image/*, application/pdf, text/*, application/msword, etc.
+            # jetgo-audios acepta: audio/*
             bucket_name = 'jetgo-audios' if file.content_type.startswith('audio/') else 'chat-files'
             
-            logger.info(f"=== AUDIO UPLOAD DEBUG ===")
+            logger.info(f"=== FILE UPLOAD DEBUG ===")
             logger.info(f"File type: {file.content_type}")
             logger.info(f"Bucket selected: {bucket_name}")
             logger.info(f"File path: {file_path}")
             logger.info(f"File size: {len(file_content)} bytes")
-            logger.info(f"Content type for upload: audio/webm")
+            logger.info(f"Content type for upload: {file.content_type}")
             
-            # Forzar el tipo MIME correcto en el upload
+            # Usar el tipo MIME correcto según el tipo de archivo
             upload_response = admin.storage.from_(bucket_name).upload(
                 file_path,
                 file_content,
                 file_options={
-                    'content-type': 'audio/webm',
+                    'content-type': file.content_type,
                     'cache-control': '3600'
                 }
             )

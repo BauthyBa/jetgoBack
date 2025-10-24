@@ -20,6 +20,7 @@ urlpatterns = [
     path('chat/test/', chat_views.test_endpoint, name='test-endpoint'),
     path('chat/test-audio/', chat_views.test_audio_upload, name='test-audio-upload'),
     path('chat/upload-file/', chat_views.upload_chat_file, name='upload-chat-file'),
+    path('chat/upload-camera/', chat_views.upload_camera_image, name='upload-camera-image'),
     path('chat/send-message/', chat_views.send_chat_message, name='send-chat-message'),
     path('chat/rooms/<str:room_id>/messages/', chat_views.get_chat_messages, name='get-chat-messages'),
     path('chat/rooms/', chat_views.get_user_chat_rooms, name='get-user-chat-rooms'),
