@@ -4,6 +4,7 @@ from . import views, chat_views, trip_reviews_views, expenses_views
 urlpatterns = [
     # Viajes
     path('trips/', views.TripListCreateView.as_view(), name='trip-list-create'),
+    path('trips/create/', views.TripListCreateView.as_view(), name='trip-create'),
     path('trips/<int:pk>/', views.TripDetailView.as_view(), name='trip-detail'),
     path('trips/my-participating/', views.user_participating_trips, name='user-participating-trips'),
     path('trips/<int:trip_id>/participants/', views.trip_participants, name='trip-participants'),
