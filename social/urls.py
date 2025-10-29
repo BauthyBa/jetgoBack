@@ -14,6 +14,9 @@ urlpatterns = [
     path('stories/', views.StoryListCreateView.as_view(), name='story-list-create'),
     path('stories/<str:story_id>/view/', views.StoryViewView.as_view(), name='story-view'),
     
+    # Saved posts
+    path('saved/', views.SavedPostsView.as_view(), name='saved-posts'),
+
     # Follows
     path('users/<str:user_id>/follow/', views.FollowUserView.as_view(), name='follow-user'),
     path('users/<str:user_id>/followers/', views.FollowersListView.as_view(), name='followers-list'),

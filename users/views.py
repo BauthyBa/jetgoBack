@@ -185,6 +185,8 @@ class TripCreateView(APIView):
         room_type = payload.get('room_type')
         season = payload.get('season')
         max_participants = payload.get('max_participants')
+        # transport_type puede venir como 'transport_type' (backend) o 'tipo' (UI)
+        transport_type = payload.get('transport_type') or payload.get('tipo')
         date_iso = payload.get('start_date') or payload.get('date')  # Compatibilidad con ambos nombres
         name = payload.get('name') or f"Viaje {origin or ''}-{destination or ''}"
         if not creator_id:
@@ -204,6 +206,7 @@ class TripCreateView(APIView):
         # status ya no es requerido, se calcula automáticamente
         add_if_missing('room_type', room_type)
         add_if_missing('max_participants', max_participants)
+        add_if_missing('transport_type', transport_type)
         if required_missing:
             return Response({'ok': False, 'error': f'Faltan campos requeridos: {", ".join(required_missing)}'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -245,6 +248,7 @@ class TripCreateView(APIView):
                 'room_type': room_type,
                 'season': season,
                 'max_participants': max_participants_num,
+                'transport_type': transport_type,
             }
             if image_url:
                 try:

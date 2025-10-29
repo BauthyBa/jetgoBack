@@ -649,6 +649,78 @@ class NotificationReadView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+# Saved posts list for a user
+class SavedPostsView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        """Obtener posts guardados de un usuario
+        Query params:
+          - user_id: ID del usuario dueño de los guardados (obligatorio)
+        """
+        try:
+            user_id = request.GET.get('user_id')
+            if not user_id:
+                return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+            supabase = get_supabase_client()
+
+            # Obtener IDs guardados
+            saved_resp = supabase.table('saved_posts').select('post_id').eq('user_id', user_id).execute()
+            post_ids = [str(r['post_id']) for r in (saved_resp.data or []) if r.get('post_id')]
+
+            if not post_ids:
+                return Response({"posts": []})
+
+            # Traer posts por IDs (sin filtrar por is_public, ya que son guardados)
+            posts_resp = supabase.table('posts').select('*').in_('id', post_ids).execute()
+            raw_posts = posts_resp.data or []
+
+            posts = []
+            for post in raw_posts:
+                # Datos de autor
+                user_response = supabase.table('User').select('nombre, apellido, avatar_url').eq('userid', post['user_id']).execute()
+                user_data = user_response.data[0] if user_response.data else None
+
+                # Conteos
+                likes_response = supabase.table('post_likes').select('id', count='exact').eq('post_id', post['id']).execute()
+                likes_count = likes_response.count if likes_response.count else 0
+
+                comments_response = supabase.table('post_comments').select('id', count='exact').eq('post_id', post['id']).is_('deleted_at', 'null').execute()
+                comments_count = comments_response.count if comments_response.count else 0
+
+                posts.append({
+                    "id": str(post['id']),
+                    "user_id": str(post['user_id']),
+                    "content": post.get('content'),
+                    "image_url": post.get('image_url'),
+                    "video_url": post.get('video_url'),
+                    "location": post.get('location'),
+                    "is_public": post.get('is_public', True),
+                    "created_at": post.get('created_at'),
+                    "author": {
+                        "nombre": user_data['nombre'] if user_data else 'Usuario',
+                        "apellido": user_data['apellido'] if user_data else '',
+                        "avatar_url": user_data['avatar_url'] if user_data else None
+                    },
+                    "likes_count": likes_count,
+                    "comments_count": comments_count,
+                    "is_liked": False
+                })
+
+            # Ordenar por fecha desc si existe created_at
+            try:
+                posts.sort(key=lambda p: p.get('created_at') or '', reverse=True)
+            except Exception:
+                pass
+
+            return Response({"posts": posts})
+
+        except Exception as e:
+            print(f"Error in SavedPostsView: {str(e)}")
+            return Response({"error": f"Supabase error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 # Vista de prueba simple
 class TestView(APIView):
     authentication_classes = []
