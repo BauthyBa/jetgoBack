@@ -7,6 +7,8 @@ from .models import User, Review
 from django.db.models import Avg
 from api.supabase_client import get_supabase_admin
 from os import environ
+import math
+from trips.models import Trip, TripParticipant
 import re
 from datetime import datetime, date
 import requests
@@ -1034,12 +1036,21 @@ class GetUserProfileView(APIView):
                 for i in range(1, 6):
                     rating_distribution[str(i)] = reviews.filter(rating=i).count()
 
+                # Calcular nivel de confianza (0-100) ponderado por cantidad de reseñas
+                # Fórmula simple: confianza = (avg/5) * (1 - e^(-n/10)) * 100
+                confidence = 0
+                try:
+                    confidence = int(round((avg_rating / 5.0) * (1 - math.e ** (-(total_reviews / 10.0))) * 100))
+                except Exception:
+                    confidence = 0
+                
                 reviews_data = {
                     'reviews': reviews_serializer.data,
                     'statistics': {
                         'total_reviews': total_reviews,
                         'average_rating': avg_rating,
-                        'rating_distribution': rating_distribution
+                        'rating_distribution': rating_distribution,
+                        'trust_level': confidence
                     }
                 }
             except User.DoesNotExist:
@@ -1049,14 +1060,41 @@ class GetUserProfileView(APIView):
                     'statistics': {
                         'total_reviews': 0,
                         'average_rating': 0,
-                        'rating_distribution': {'1': 0, '2': 0, '3': 0, '4': 0, '5': 0}
+                        'rating_distribution': {'1': 0, '2': 0, '3': 0, '4': 0, '5': 0},
+                        'trust_level': 0
                     }
                 }
 
+            # Historial de viajes (creados y participados) desde Django
+            created_trips = Trip.objects.filter(creator_id=user_id).order_by('-created_at')[:20]
+            participating_trip_ids = TripParticipant.objects.filter(user_id=user_id).values_list('trip_id', flat=True)
+            participating_trips = Trip.objects.filter(id__in=participating_trip_ids).exclude(creator_id=user_id).order_by('-created_at')[:20]
+            
+            def serialize_trip_min(trip):
+                return {
+                    'id': trip.id,
+                    'name': trip.name,
+                    'origin': trip.origin,
+                    'destination': trip.destination,
+                    'start_date': trip.start_date,
+                    'end_date': trip.end_date,
+                    'travel_style': trip.travel_style,
+                    'transport_type': trip.transport_type,
+                    'budget_min': trip.budget_min,
+                    'budget_max': trip.budget_max,
+                    'status': trip.status,
+                }
+            
+            trips_history = {
+                'created': [serialize_trip_min(t) for t in created_trips],
+                'participated': [serialize_trip_min(t) for t in participating_trips],
+            }
+            
             return Response({
                 'ok': True,
                 'user': user_data,
-                'reviews_data': reviews_data
+                'reviews_data': reviews_data,
+                'trips_history': trips_history,
             })
 
         except Exception as e:
@@ -2612,6 +2650,81 @@ class InviteFriendToTripView(APIView):
             
         except Exception as e:
             print(f"Error invitando amigo a viaje: {str(e)}")
+            return Response({
+                'ok': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RemoveFriendView(APIView):
+    """Eliminar relación de amistad (unfriend) entre dos usuarios"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request, *args, **kwargs):
+        try:
+            user_id = request.data.get('user_id')
+            friend_id = request.data.get('friend_id')
+            if not user_id or not friend_id:
+                return Response({
+                    'ok': False,
+                    'error': 'user_id y friend_id son requeridos'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if user_id == friend_id:
+                return Response({
+                    'ok': False,
+                    'error': 'No puedes eliminarte a ti mismo'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            admin = get_supabase_admin()
+
+            # Eliminar relaciones de amistad aceptadas en cualquier dirección (best-effort)
+            try:
+                admin.table('friend_requests')\
+                    .delete()\
+                    .eq('sender_id', user_id)\
+                    .eq('receiver_id', friend_id)\
+                    .eq('status', 'accepted')\
+                    .execute()
+            except Exception:
+                pass
+            try:
+                admin.table('friend_requests')\
+                    .delete()\
+                    .eq('sender_id', friend_id)\
+                    .eq('receiver_id', user_id)\
+                    .eq('status', 'accepted')\
+                    .execute()
+            except Exception:
+                pass
+
+            # A partir de aquí, consideramos la operación exitosa independientemente de si existía o no,
+            # para evitar falsos negativos por falta de 'count' en delete.
+
+            # Notificar al amigo (best-effort)
+            try:
+                remover_resp = admin.table('User').select('nombre, apellido').eq('userid', user_id).limit(1).execute()
+                remover = (getattr(remover_resp, 'data', None) or [None])[0]
+                remover_name = f"{(remover or {}).get('nombre','')} {(remover or {}).get('apellido','')}".strip() or 'Un usuario'
+                admin.table('notifications').insert({
+                    'user_id': friend_id,
+                    'type': 'friend_removed',
+                    'title': 'Amistad eliminada',
+                    'message': f'{remover_name} te eliminó de sus amigos',
+                    'data': {
+                        'remover_id': user_id,
+                        'remover_name': remover_name
+                    }
+                }).execute()
+            except Exception:
+                pass
+
+            return Response({
+                'ok': True,
+                'message': 'Amistad eliminada correctamente'
+            })
+        except Exception as e:
             return Response({
                 'ok': False,
                 'error': str(e)

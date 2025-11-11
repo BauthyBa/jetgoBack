@@ -4,6 +4,7 @@ from .views import (
     LoginView,
     UpsertProfileView,
     InviteView,
+    RemoveFriendView,
     TripCreateView,
     TripUpdateView,
     ListTripsView,
@@ -105,5 +106,6 @@ urlpatterns = [
     path('friends/check-status/', CheckFriendshipStatusView.as_view(), name='check_friendship_status'),
     path('friends/debug/', DebugFriendRequestsView.as_view(), name='debug_friend_requests'),
     path('friends/invite-to-trip/', InviteFriendToTripView.as_view(), name='invite_friend_to_trip'),
+    path('friends/remove/', RemoveFriendView.as_view(), name='remove_friend'),
 ]
 

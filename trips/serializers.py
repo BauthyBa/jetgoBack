@@ -20,6 +20,14 @@ class TripSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['creator', 'current_participants', 'created_at', 'updated_at']
+    
+    def validate(self, attrs):
+        # Log para debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"TripSerializer received attrs: {attrs}")
+        logger.info(f"transport_type in attrs: {attrs.get('transport_type', 'NOT PROVIDED')}")
+        return attrs
 
 
 class ApplicationSerializer(serializers.ModelSerializer):

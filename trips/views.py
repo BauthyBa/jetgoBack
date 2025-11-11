@@ -3,7 +3,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
-from django.db.models import Q
+from django.db.models import Q, F
 from .models import Trip, Application, TripParticipant
 from .serializers import (
     TripSerializer, TripListSerializer, ApplicationSerializer, 
@@ -32,11 +32,19 @@ class TripListCreateView(generics.ListCreateAPIView):
         queryset = Trip.objects.filter(status='abierto').order_by('-created_at')
         
         # Filtros opcionales
-        origin = self.request.query_params.get('origin')
-        destination = self.request.query_params.get('destination')
-        travel_style = self.request.query_params.get('travel_style')
-        budget_min = self.request.query_params.get('budget_min')
-        budget_max = self.request.query_params.get('budget_max')
+        params = self.request.query_params
+        origin = params.get('origin')
+        destination = params.get('destination')
+        travel_style = params.get('travel_style')
+        transport_type = params.get('transport_type')
+        accommodation_type = params.get('accommodation_type')
+        flexibility_level = params.get('flexibility_level')
+        budget_min = params.get('budget_min')
+        budget_max = params.get('budget_max')
+        date_from = params.get('date_from')  # YYYY-MM-DD
+        date_to = params.get('date_to')      # YYYY-MM-DD
+        min_spots = params.get('min_spots')  # cupos disponibles mínimos
+        query = params.get('q')  # búsqueda libre en nombre/descripcion/actividades/destino
         
         if origin:
             queryset = queryset.filter(origin__icontains=origin)
@@ -44,16 +52,54 @@ class TripListCreateView(generics.ListCreateAPIView):
             queryset = queryset.filter(destination__icontains=destination)
         if travel_style:
             queryset = queryset.filter(travel_style=travel_style)
+        if transport_type:
+            queryset = queryset.filter(transport_type=transport_type)
+        if accommodation_type:
+            queryset = queryset.filter(accommodation_type=accommodation_type)
+        if flexibility_level:
+            queryset = queryset.filter(flexibility_level=flexibility_level)
         if budget_min:
-            queryset = queryset.filter(budget_min__gte=budget_min)
+            try:
+                queryset = queryset.filter(budget_min__gte=float(budget_min))
+            except (TypeError, ValueError):
+                pass
         if budget_max:
-            queryset = queryset.filter(budget_max__lte=budget_max)
+            try:
+                queryset = queryset.filter(budget_max__lte=float(budget_max))
+            except (TypeError, ValueError):
+                pass
+        if date_from:
+            try:
+                dt = datetime.strptime(date_from, '%Y-%m-%d').date()
+                queryset = queryset.filter(start_date__gte=dt)
+            except Exception:
+                pass
+        if date_to:
+            try:
+                dt = datetime.strptime(date_to, '%Y-%m-%d').date()
+                queryset = queryset.filter(end_date__lte=dt)
+            except Exception:
+                pass
+        if min_spots:
+            try:
+                ms = int(min_spots)
+                # available_spots = max_participants - current_participants
+                queryset = queryset.filter(max_participants__gte=F('current_participants') + ms)
+            except Exception:
+                pass
+        if query:
+            q = Q(name__icontains=query) | Q(description__icontains=query) | Q(planned_activities__icontains=query) | Q(destination__icontains=query) | Q(origin__icontains=query)
+            queryset = queryset.filter(q)
             
         return queryset
     
     def perform_create(self, serializer):
         # Validaciones antes de crear el viaje
         validated_data = serializer.validated_data
+        
+        # Log para debugging
+        logger.info(f"Creating trip with data: {validated_data}")
+        logger.info(f"Transport type: {validated_data.get('transport_type', 'NOT PROVIDED')}")
         
         # Validación de presupuesto
         budget_min = validated_data.get('budget_min')
@@ -83,6 +129,7 @@ class TripListCreateView(generics.ListCreateAPIView):
             raise ValidationError({'start_date': 'La fecha de inicio no puede ser posterior a la fecha de fin'})
         
         trip = serializer.save(creator=self.request.user)
+        logger.info(f"Trip created with ID: {trip.id}, transport_type: {trip.transport_type}")
         # Registrar al creador como participante
         try:
             TripParticipant.objects.get_or_create(
