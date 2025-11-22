@@ -46,7 +46,7 @@ class TripExpenseCreateView(APIView):
 
             # Verificar que el viaje existe
             try:
-                trip_resp = admin.table('trips').select('id,status').eq('id', trip_id).limit(1).execute()
+                trip_resp = admin.table('trips').select('id,status,creator_id').eq('id', trip_id).limit(1).execute()
                 trip = (getattr(trip_resp, 'data', None) or [None])[0]
                 
                 if not trip:
@@ -63,16 +63,25 @@ class TripExpenseCreateView(APIView):
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
             # Verificar que el usuario es miembro del viaje
+            creator_id = str(trip.get('creator_id') or '')
             try:
                 member_resp = admin.table('trip_members').select('user_id').eq('trip_id', trip_id).eq('user_id', payer_id).limit(1).execute()
                 member = (getattr(member_resp, 'data', None) or [None])[0]
+                is_creator = creator_id and str(payer_id) == creator_id
                 
                 if not member:
-                    return Response({
-                        'ok': False, 
-                        'error': 'Solo los miembros del viaje pueden crear gastos'
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                    
+                    # Registrar al pagador (y al creador si falta) como miembros para poder seguir
+                    to_seed = []
+                    if is_creator:
+                        to_seed.append({'trip_id': trip_id, 'user_id': str(payer_id), 'role': 'owner'})
+                    else:
+                        to_seed.append({'trip_id': trip_id, 'user_id': str(payer_id), 'role': 'member'})
+                    if creator_id and creator_id != str(payer_id):
+                        to_seed.append({'trip_id': trip_id, 'user_id': creator_id, 'role': 'owner'})
+                    try:
+                        admin.table('trip_members').insert(to_seed).execute()
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f"Error verificando membresía: {str(e)}")
                 return Response({
@@ -84,12 +93,25 @@ class TripExpenseCreateView(APIView):
             try:
                 members_resp = admin.table('trip_members').select('user_id').eq('trip_id', trip_id).execute()
                 members = getattr(members_resp, 'data', None) or []
-                
                 if not members:
-                    return Response({
-                        'ok': False, 
-                        'error': 'No se encontraron miembros en el viaje'
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                    # Si no hay registros, poblar con el creador y el pagador y continuar
+                    seed_ids = []
+                    creator_id = str(trip.get('creator_id') or '')
+                    if creator_id:
+                        seed_ids.append((creator_id, 'owner'))
+                    if str(payer_id) and str(payer_id) != creator_id:
+                        seed_ids.append((str(payer_id), 'member'))
+                    if seed_ids:
+                        try:
+                            admin.table('trip_members').insert([
+                                {'trip_id': trip_id, 'user_id': uid, 'role': role} for uid, role in seed_ids
+                            ]).execute()
+                            members = [{'user_id': uid} for uid, _ in seed_ids]
+                        except Exception as se:
+                            logger.warning(f"No se pudo inicializar miembros del viaje {trip_id}: {se}")
+                            members = [{'user_id': str(payer_id)}]
+                    else:
+                        members = [{'user_id': str(payer_id)}]
                     
             except Exception as e:
                 logger.error(f"Error obteniendo miembros: {str(e)}")
@@ -223,11 +245,91 @@ class TripExpenseListView(APIView):
             query = query.order('expense_date', desc=True)
             query = query.range(offset, offset + limit - 1)
 
-            resp = query.execute()
-            expenses = getattr(resp, 'data', None) or []
+            try:
+                resp = query.execute()
+                expenses = getattr(resp, 'data', None) or []
+            except Exception as qerr:
+                logger.warning(f"Fallo query enriquecida de gastos, usando fallback simple: {qerr}")
+                # Fallback: seleccionar solo columnas básicas sin joins
+                try:
+                    resp = (
+                        admin.table('trip_expenses')
+                        .select('id,trip_id,payer_id,amount,currency,description,category,expense_date,created_at,updated_at,status')
+                        .eq('trip_id', trip_id)
+                        .order('expense_date', desc=True)
+                        .range(offset, offset + limit - 1)
+                        .execute()
+                    )
+                    expenses = getattr(resp, 'data', None) or []
+                except Exception as fb_err:
+                    logger.error(f"Fallback de gastos también falló: {fb_err}")
+                    return Response({
+                        'ok': False,
+                        'error': 'No se pudieron cargar los gastos'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Enriquecer splits cuando no vienen por join
+            try:
+                ids = [e.get('id') for e in expenses if e.get('id')]
+                if ids:
+                    splits_resp = admin.table('trip_expense_splits').select('expense_id,user_id,amount_owed,amount_paid,is_settled').in_('expense_id', ids).execute()
+                    splits = getattr(splits_resp, 'data', None) or []
+                    # Mapear usuarios de splits y payers
+                    user_ids = {s.get('user_id') for s in splits if s.get('user_id')}
+                    payer_ids = {e.get('payer_id') for e in expenses if e.get('payer_id')}
+                    all_user_ids = {str(u) for u in (user_ids | payer_ids) if u}
+                    user_map = {}
+                    if all_user_ids:
+                        users_resp = admin.table('User').select('userid,nombre,apellido').in_('userid', list(all_user_ids)).execute()
+                        users = getattr(users_resp, 'data', None) or []
+                        user_map = {u.get('userid'): u for u in users}
+                    by_expense = {}
+                    for s in splits:
+                        eid = s.get('expense_id')
+                        if not eid:
+                            continue
+                        if eid not in by_expense:
+                            by_expense[eid] = []
+                        u = user_map.get(str(s.get('user_id')))
+                        s_copy = dict(s)
+                        if u:
+                            s_copy['user'] = {'userid': u.get('userid'), 'nombre': u.get('nombre'), 'apellido': u.get('apellido')}
+                        by_expense[eid].append(s_copy)
+                    for e in expenses:
+                        if e.get('id') in by_expense:
+                            e['splits'] = by_expense[e.get('id')]
+                    # Enriquecer nombres de pagador si falta
+                    for e in expenses:
+                        pid = str(e.get('payer_id'))
+                        if pid and not e.get('payer') and pid in user_map:
+                            u = user_map[pid]
+                            e['payer'] = {'userid': pid, 'nombre': u.get('nombre'), 'apellido': u.get('apellido')}
+                            e['payer_full_name'] = f"{u.get('nombre','')} {u.get('apellido','')}".strip()
+                            e['payer_name'] = u.get('nombre')
+            except Exception as enrich_splits_err:
+                logger.warning(f"No se pudieron enriquecer splits/nombres: {enrich_splits_err}")
+
+            # Enriquecer con nombres de pagador si no vienen del join
+            try:
+                missing_payer_name = any(not e.get('payer') for e in expenses)
+                if missing_payer_name:
+                    payer_ids = {str(e.get('payer_id')) for e in expenses if e.get('payer_id')}
+                    if payer_ids:
+                        users_resp = admin.table('User').select('userid,nombre,apellido').in_('userid', list(payer_ids)).execute()
+                        users = getattr(users_resp, 'data', None) or []
+                        user_map = {u.get('userid'): u for u in users}
+                        for e in expenses:
+                            pid = str(e.get('payer_id'))
+                            u = user_map.get(pid)
+                            if u:
+                                e['payer_name'] = f"{u.get('nombre','')}".strip()
+                                e['payer_full_name'] = f"{u.get('nombre','')} {u.get('apellido','')}".strip()
+            except Exception as enrich_err:
+                logger.warning(f"No se pudieron enriquecer gastos con nombres de pagador: {enrich_err}")
 
             return Response({
                 'ok': True,
+                'expenses': expenses,
                 'data': expenses,
                 'count': len(expenses)
             })
@@ -449,23 +551,26 @@ class TripExpenseCategoriesView(APIView):
     authentication_classes = []
 
     def get(self, request, *args, **kwargs):
+        default_categories = [
+            {'id': 'comida', 'name': 'Comida', 'icon': '🍽️', 'color': '#F59E0B'},
+            {'id': 'transporte', 'name': 'Transporte', 'icon': '🚗', 'color': '#3B82F6'},
+            {'id': 'estadia', 'name': 'Estadía', 'icon': '🏨', 'color': '#10B981'},
+            {'id': 'actividades', 'name': 'Actividades', 'icon': '🎯', 'color': '#8B5CF6'},
+            {'id': 'compras', 'name': 'Compras', 'icon': '🛍️', 'color': '#EF4444'},
+            {'id': 'otros', 'name': 'Otros', 'icon': '📝', 'color': '#6B7280'},
+        ]
         try:
             admin = get_supabase_admin()
-
             resp = admin.table('expense_categories').select('*').eq('is_active', True).order('name').execute()
-            categories = getattr(resp, 'data', None) or []
-
-            return Response({
-                'ok': True,
-                'data': categories
-            })
-
+            categories = getattr(resp, 'data', None) or default_categories
         except Exception as e:
-            logger.error(f"Error en TripExpenseCategoriesView: {str(e)}")
-            return Response({
-                'ok': False, 
-                'error': str(e)
-            }, status=status.HTTP_400_BAD_REQUEST)
+            logger.warning(f"No se pudo leer expense_categories, devolviendo por defecto: {e}")
+            categories = default_categories
+
+        return Response({
+            'ok': True,
+            'data': categories
+        })
 
 
 class TripExpenseSummaryView(APIView):
