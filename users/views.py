@@ -370,6 +370,11 @@ class TripUpdateView(APIView):
             set_if_present('season', 'season')
             set_if_present('max_participants', 'max_participants', int)
             set_if_present('image_url', 'image_url')
+            # Transporte: usar columna transport_type (y tipo si existiera)
+            if payload.get('transport_type') is not None:
+                update_row['transport_type'] = payload.get('transport_type')
+            elif payload.get('tipo') is not None:
+                update_row['transport_type'] = payload.get('tipo')
 
             # Calcular estado automáticamente si se actualizan fechas
             if 'date' in update_row or 'end_date' in update_row:
