@@ -419,13 +419,33 @@ class ListTripsView(APIView):
             # Attach current_participants count for each trip (best-effort)
             enriched = []
             for t in trips:
+                current_count = None
+                # 1) Intentar contar miembros del chat grupal (no depende de que el usuario sea miembro)
                 try:
-                    c_resp = admin.table('trip_members').select('id', count='exact').eq('trip_id', t.get('id')).execute()
-                    current = getattr(c_resp, 'count', None)
-                    if isinstance(current, int):
-                        t = { **t, 'current_participants': current }
+                    room_resp = admin.table('chat_rooms').select('id').eq('trip_id', t.get('id')).eq('is_group', True).limit(1).execute()
+                    room = (getattr(room_resp, 'data', None) or [None])[0]
+                    if room and room.get('id'):
+                        mem_resp = admin.table('chat_members').select('id', count='exact').eq('room_id', room['id']).execute()
+                        count = getattr(mem_resp, 'count', None)
+                        if isinstance(count, int):
+                            current_count = count
                 except Exception:
-                    pass
+                    current_count = None
+
+                # 2) Si falló o no hay sala, contar trip_members como respaldo
+                if current_count is None:
+                    try:
+                        c_resp = admin.table('trip_members').select('id', count='exact').eq('trip_id', t.get('id')).execute()
+                        current = getattr(c_resp, 'count', None)
+                        if isinstance(current, int):
+                            current_count = current
+                    except Exception:
+                        current_count = None
+
+                if isinstance(current_count, int):
+                    # Guardar en ambos formatos por compatibilidad con el frontend
+                    t = { **t, 'current_participants': current_count, 'currentParticipants': current_count }
+
                 enriched.append(t)
 
             return Response({'ok': True, 'trips': enriched})
